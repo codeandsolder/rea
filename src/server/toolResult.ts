@@ -1,12 +1,10 @@
+import { INSPECT_ANALYSIS_VIEW_OPERATION } from "../domain/analysisView/analysisViewErrors.js";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 import { STDIO_DEFAULT_MAX_BUFFER_SIZE } from "@modelcontextprotocol/server";
 
 import type { ToolContract } from "../contracts/toolContractTypes.js";
 import type { Evidence } from "../domain/evidence.js";
-import {
-  INSPECT_ANALYSIS_VIEW_OPERATION,
-  inspectAnalysisViewInputSchema,
-} from "../domain/analysisView/analysisView.js";
+import { inspectAnalysisViewInputSchema } from "../domain/analysisView/analysisView.js";
 import {
   projectAnalysisError,
   type AnalysisErrorProjection,
@@ -48,7 +46,6 @@ const nativeEvidenceContinuation = (
 /** Immutable encoding and recovery policy shared by one MCP server. */
 export class ToolResultDelivery {
   readonly resultBudgetBytes: number;
-
   constructor(maximumResponseBytes: number) {
     this.resultBudgetBytes = maximumResponseBytes - 1024;
     Object.freeze(this);

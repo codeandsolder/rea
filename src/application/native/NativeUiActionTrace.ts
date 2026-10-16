@@ -14,6 +14,10 @@ import { nativeDispatchMetadataResultSchema } from "../../domain/native/objcSwif
 import { inspectNativeDispatch } from "./NativeDispatchMetadataInspection.js";
 import { jsonValueSchema } from "../../domain/jsonValue.js";
 import { readNativeCallRoutes } from "./NativeCallRoutes.js";
+import {
+  renderSourceLimitations,
+  type SourceLimitation,
+} from "../SourceLimitations.js";
 import { err, ok } from "../../domain/result.js";
 import { AnalysisOutputError } from "../../domain/analysisErrorCore.js";
 import { projectAnalysisError } from "../../domain/analysisErrorProjection.js";
@@ -124,6 +128,11 @@ export const traceNativeUiAction = async (
       signal === undefined ? {} : { signal },
     );
     if (!native.ok && native.error._tag === "AnalysisCancelledError")
+      return err(native.error);
+    if (
+      !native.ok &&
+      native.error._tag !== "AnalysisCapabilityUnavailableError"
+    )
       return err(native.error);
     if (native.ok) {
       const address = z.string().safeParse(native.value.result);
@@ -239,6 +248,10 @@ export const traceNativeUiAction = async (
             : graph.truncated && trace.reason === null
               ? "native_trace_output_bound_reached"
               : trace.reason,
+        limitations: [
+          ...trace.limitations,
+          ...renderSourceLimitations(expanded.limitations),
+        ],
       }),
     ),
   );
@@ -393,6 +406,7 @@ const addDirectCallees = async (input: {
   let examined = 0;
   let omitted = 0;
   let truncated = false;
+  const sourceLimitations: SourceLimitation[] = [];
   while (queueIndex < queue.length) {
     const current = queue[queueIndex++];
     if (current === undefined || visited.has(current.address)) continue;
@@ -414,6 +428,9 @@ const addDirectCallees = async (input: {
       "provider",
     );
     examined += 1;
+    sourceLimitations.push(
+      ...(execution.ok ? execution.value.limitations : execution.limitations),
+    );
     if (!execution.ok && execution.error._tag === "AnalysisCancelledError")
       return { error: execution.error };
     const unknowns = execution.ok
@@ -534,6 +551,7 @@ const addDirectCallees = async (input: {
     examined,
     omitted,
     truncated,
+    limitations: sourceLimitations,
   };
 };
 

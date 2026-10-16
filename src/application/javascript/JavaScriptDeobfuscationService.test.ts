@@ -1,3 +1,5 @@
+import { mkdir, symlink } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { AnalysisCapabilityUnavailableError } from "../../domain/analysisErrorCore.js";
@@ -5,26 +7,35 @@ import type { JavaScriptDeobfuscationResult } from "../../domain/javascript/java
 import { err, ok } from "../../domain/result.js";
 import { createAnalysisExecution } from "../AnalysisProvider.js";
 import { JavaScriptDeobfuscationService } from "./JavaScriptDeobfuscationService.js";
+import { createTestTempDirectory } from "../../../tests/fixtures/temporaryDirectory.js";
 
 const file = { path: "/tmp/source.js", sha256: "a".repeat(64), bytes: 12 };
+const outputFile = (path: string, outputRoot = "/tmp/out") => ({
+  path: `${outputRoot}/${path}`,
+  sha256: file.sha256,
+  bytes: file.bytes,
+});
 const provider = {
   id: "fixture-deobfuscator",
   name: "Fixture deobfuscator",
   version: "1",
 } as const;
-const result = (): JavaScriptDeobfuscationResult => ({
-  source: { ...file, published_copy: file },
+const result = (outputRoot = "/tmp/out"): JavaScriptDeobfuscationResult => ({
+  source: {
+    ...file,
+    published_copy: outputFile("inputs/source.js", outputRoot),
+  },
   options: { max_iterations: 16 },
   status: "unchanged",
-  output: file,
-  report: file,
-  manifest: file,
+  output: outputFile("deobfuscated/source.js", outputRoot),
+  report: outputFile("reports/js-redox.json", outputRoot),
+  manifest: outputFile("manifest.json", outputRoot),
   proof: {
     input_sha256: file.sha256,
     output_sha256: file.sha256,
   },
   analysis_input: {
-    input_path: "/tmp/output/deobfuscated",
+    input_path: `${outputRoot}/deobfuscated`,
     format: "directory",
   },
   runtime_execution: "not-performed",
@@ -149,7 +160,93 @@ describe("JavaScript deobfuscation workflow", () => {
       output_directory: "/tmp/out",
     });
     if (!response.ok) throw new Error("expected valid deobfuscation Evidence");
+    if (response.value.subject === null)
+      throw new Error("expected JavaScript Evidence subject");
     expect(response.value.subject.format).toBe("javascript");
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "canonicalizes a symlinked output parent before validating returned artifacts",
+    async () => {
+      const root = await createTestTempDirectory("rea-js-service-symlink-");
+      const canonicalParent = join(root, "canonical");
+      const aliasParent = join(root, "alias");
+      await mkdir(canonicalParent, { recursive: true });
+      await symlink(canonicalParent, aliasParent);
+      const requestedOutput = join(aliasParent, "out");
+      const canonicalOutput = join(canonicalParent, "out");
+      const returned = result(canonicalOutput);
+      const service = new JavaScriptDeobfuscationService({
+        deobfuscate: async () =>
+          ok(
+            createAnalysisExecution(returned, provider, {
+              subject: {
+                path: file.path,
+                sha256: file.sha256,
+                format: "javascript",
+              },
+            }),
+          ),
+      });
+      const response = await service.deobfuscate({
+        path: file.path,
+        output_directory: requestedOutput,
+      });
+      if (!response.ok) throw response.error;
+      expect(response.value.normalized_result).toMatchObject({
+        output: { path: join(canonicalOutput, "deobfuscated/source.js") },
+      });
+    },
+  );
+
+  it("rejects artifacts outside the canonical requested output tree", async () => {
+    const returned = result();
+    returned.output = { ...returned.output, path: "/tmp/elsewhere/source.js" };
+    const service = new JavaScriptDeobfuscationService({
+      deobfuscate: async () =>
+        ok(
+          createAnalysisExecution(returned, provider, {
+            subject: {
+              path: file.path,
+              sha256: file.sha256,
+              format: "javascript",
+            },
+          }),
+        ),
+    });
+    const response = await service.deobfuscate({
+      path: file.path,
+      output_directory: "/tmp/out",
+    });
+    if (response.ok) throw new Error("expected output-tree binding rejection");
+    expect(response.error._tag).toBe("AnalysisOutputError");
+  });
+
+  it("carries normalized and execution limitations into Evidence", async () => {
+    const returned = result();
+    returned.limitations = ["normalized caveat"];
+    const service = new JavaScriptDeobfuscationService({
+      deobfuscate: async () =>
+        ok(
+          createAnalysisExecution(returned, provider, {
+            subject: {
+              path: file.path,
+              sha256: file.sha256,
+              format: "javascript",
+            },
+            limitations: ["execution cleanup caveat"],
+          }),
+        ),
+    });
+    const response = await service.deobfuscate({
+      path: file.path,
+      output_directory: "/tmp/out",
+    });
+    if (!response.ok) throw response.error;
+    expect(response.value.limitations).toEqual([
+      "normalized caveat",
+      "execution cleanup caveat",
+    ]);
   });
 
   it.each([

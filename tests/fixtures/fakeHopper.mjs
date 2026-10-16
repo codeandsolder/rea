@@ -217,6 +217,7 @@ const server = createServer((socket) => {
                 name: "REA Hopper bridge",
                 version: "1.0.0",
                 run_id: runId,
+                process_id: process.pid,
               },
             },
             true,
@@ -228,6 +229,7 @@ const server = createServer((socket) => {
         request.method === "shutdown" ||
         request.method === "shutdown_document"
       ) {
+        if (shutdownMode === "exit-without-ack") process.exit(0);
         send({ id: request.id, result: shutdownResult() });
         if (shutdownMode !== "cleanup-required") setTimeout(closeServer, 2);
       } else if (request.method === "hang") {

@@ -11,6 +11,18 @@ unparsed module-text line. A missing record is an unknown, not proof of a
 non-Go binary; observed metadata does not authenticate its claims. Function,
 source and type recovery remain a separate native-analysis question.
 
+## Rust dependency metadata
+
+Use `inspect_rust_binary` for an explicit local ELF, PE, or thin Mach-O when
+the question concerns the cargo-auditable crate list embedded in `.dep-v0`
+(Mach-O: `__DATA,.dep-v0`). No `open_binary`, Rust installation, or target
+execution is required. The CLI equivalent is `inspect-rust-binary PATH`.
+Preserve artifact SHA-256, package order, dependency indices, and the section
+file range. A missing section is null metadata, not proof the binary has no
+dependencies. An omitted package kind stays null. A rustc commit hash is
+inferred from a read-only `/rustc/<40-hex>/` path and does not by itself
+identify the compiler. See [Rust binaries](https://github.com/morluto/rea/blob/main/docs/rust-binaries.md).
+
 ## SQLite snapshots
 
 Use `inspect_sqlite_database` with an explicit local database snapshot for its
@@ -156,6 +168,14 @@ Collections are `references`, `resources` and `attributes`. Paging does not
 repeat parsing. Returned-row exhaustion
 does not prove complete metadata or absence under partial/unavailable coverage;
 preserve build-local tokens and their artifact/MVID scope.
+
+`inspect_managed_members` always returns the assembly-wide `member_refs`, even
+for one selected type. For questions about a selected type, select
+`detail: "summary"` with `type_names`; it returns the selection (with unmatched
+names), coverage and per-collection counts. Page rows with
+`view: {kind: "managed-members", collection: "call_edges", offset: 0, limit: 64}`
+over `types`, `exported_types`, `fields`, `methods`, `member_refs`, `call_edges`,
+`field_accesses` or `user_strings`.
 
 ### .NET NativeAOT
 

@@ -12,6 +12,9 @@ import {
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { Ajv2020 } from "ajv/dist/2020.js";
+import { PACKET_ARTIFACTS, measurePacketEntry } from "./packet-entry.mjs";
+import { SIGNAL_ARTIFACTS, measureSignalEntry } from "./signal-entry.mjs";
+import { SAZ_ARTIFACTS, measureSazEntry } from "./saz-entry.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const { values } = parseArgs({
@@ -29,6 +32,9 @@ const { values } = parseArgs({
     "managed-question": { type: "string", default: "inventory" },
     schemas: { type: "string", default: "default" },
     "sqlite-selection": { type: "string", default: "all" },
+    "packet-selection": { type: "string", default: "baseline" },
+    "signal-selection": { type: "string", default: "baseline" },
+    "saz-selection": { type: "string", default: "baseline" },
   },
 });
 if (
@@ -39,12 +45,33 @@ if (
   !isAbsolute(values.path) ||
   !isAbsolute(values.output) ||
   !["complete", "summary"].includes(values.delivery) ||
+  !["baseline", "focused", "retained"].includes(values["saz-selection"]) ||
+  (!Object.hasOwn(SAZ_ARTIFACTS, values.artifact) &&
+    values["saz-selection"] !== "baseline") ||
+  (Object.hasOwn(SAZ_ARTIFACTS, values.artifact) &&
+    values.delivery !== "complete") ||
+  !["baseline", "focused", "discovery", "pages"].includes(
+    values["signal-selection"],
+  ) ||
+  (!Object.hasOwn(SIGNAL_ARTIFACTS, values.artifact) &&
+    values["signal-selection"] !== "baseline") ||
+  (Object.hasOwn(SIGNAL_ARTIFACTS, values.artifact) &&
+    values.delivery !== "complete") ||
   !["entry", "entry-and-main", "entry-views"].includes(
     values["native-question"],
   ) ||
   !["inventory", "selected"].includes(values["javascript-question"]) ||
   !["default", "selected"].includes(values.schemas) ||
   !["all", "columns"].includes(values["sqlite-selection"]) ||
+  !["baseline", "focused", "discovery", "pages"].includes(
+    values["packet-selection"],
+  ) ||
+  (!Object.hasOwn(PACKET_ARTIFACTS, values.artifact) &&
+    values["packet-selection"] !== "baseline") ||
+  (Object.hasOwn(PACKET_ARTIFACTS, values.artifact) &&
+    values.delivery !== "complete") ||
+  (values["packet-selection"] === "pages" &&
+    values.artifact !== "wireshark-pgsql-jdbc.pcap") ||
   (values.artifact !== "qgis-world-map.gpkg" &&
     values["sqlite-selection"] !== "all") ||
   (values.artifact === "qgis-world-map.gpkg" &&
@@ -141,6 +168,24 @@ const fingerprints = {
   measure_source_sha256: await fileSha(fileURLToPath(import.meta.url)),
   native_workflow_source_sha256: await fileSha(
     fileURLToPath(new URL("./native-entry.mjs", import.meta.url)),
+  ),
+  packet_workflow_source_sha256: await fileSha(
+    fileURLToPath(new URL("./packet-entry.mjs", import.meta.url)),
+  ),
+  packet_oracle_source_sha256: await fileSha(
+    fileURLToPath(new URL("./packet-oracle.py", import.meta.url)),
+  ),
+  signal_workflow_source_sha256: await fileSha(
+    fileURLToPath(new URL("./signal-entry.mjs", import.meta.url)),
+  ),
+  signal_oracle_source_sha256: await fileSha(
+    fileURLToPath(new URL("./signal-oracle.py", import.meta.url)),
+  ),
+  saz_workflow_source_sha256: await fileSha(
+    fileURLToPath(new URL("./saz-entry.mjs", import.meta.url)),
+  ),
+  saz_oracle_source_sha256: await fileSha(
+    fileURLToPath(new URL("./saz-oracle.py", import.meta.url)),
   ),
   runtime_files_sha256: sha(JSON.stringify(runtimeFiles)),
   runtime_dispatcher_sha256: await fileSha(
@@ -523,7 +568,225 @@ const inspectEvmTarget = async () => {
   };
 };
 
+const PCAP_EVIDENCE_ID = /^ev_[a-f0-9]{64}$/u;
+const pcapObservation = (evidence, requestedView, parseEvidence) => {
+  // Authenticate with the selected runtime's owner, preserving the original
+  // envelope for measurement and provenance rather than reconstructing it.
+  parseEvidence(evidence);
+  const evidenceId = evidence.evidence_id;
+  const value = normalized(evidence);
+  for (const key of ["limitations", "unknowns"])
+    if (
+      Object.hasOwn(value, key) &&
+      (!Array.isArray(value[key]) ||
+        !value[key].every((item) => typeof item === "string"))
+    )
+      throw new Error("PCAP normalized provenance lacks a valid string list");
+  const target =
+    value.kind === "summary"
+      ? value.summary?.target
+      : value.kind === "pcap"
+        ? value.artifact
+        : value.target;
+  if (
+    evidence.subject?.digest?.sha256 !== inputSha ||
+    evidence.subject?.local_path !== values.path ||
+    target?.sha256 !== inputSha ||
+    target?.path !== values.path ||
+    (value.kind === "summary" &&
+      (value.artifact?.sha256 !== inputSha ||
+        value.artifact?.path !== values.path))
+  )
+    throw new Error("PCAP Evidence does not identify the selected capture");
+  // Summary delivery delegates to a retained view, whose Evidence operation is
+  // inspect_analysis_view even when inspect_pcap_capture was requested.
+  const operation = requestedView
+    ? "inspect_analysis_view"
+    : "inspect_pcap_capture";
+  if (evidence.operation !== operation)
+    throw new Error(
+      "PCAP Evidence operation differs from the requested delivery",
+    );
+  if (
+    requestedView &&
+    (typeof value.parent_evidence_id !== "string" ||
+      !PCAP_EVIDENCE_ID.test(value.parent_evidence_id) ||
+      value.parent_evidence_id === evidenceId ||
+      !Array.isArray(evidence.evidence_links) ||
+      !evidence.evidence_links.includes(value.parent_evidence_id))
+  )
+    throw new Error("PCAP retained parent lacks a distinct Evidence link");
+  if (
+    requestedView &&
+    value.parent_digest !== value.parent_evidence_id.slice(3)
+  )
+    throw new Error("PCAP retained parent digest differs from its identity");
+  const parameters = requestedView
+    ? { parent_evidence_id: value.parent_evidence_id, view: requestedView }
+    : { path: values.path };
+  if (
+    !isDeepStrictEqual(evidence.parameters, parameters) ||
+    (requestedView && !isDeepStrictEqual(value.view, requestedView))
+  )
+    throw new Error("PCAP Evidence parameters or view differ from the request");
+  return {
+    evidence_id: evidenceId,
+    limitations: evidence.limitations,
+    ...Object.fromEntries(
+      [
+        "kind",
+        "view",
+        "parent_evidence_id",
+        "coverage",
+        "limitations",
+        "unknowns",
+      ]
+        .filter((key) => Object.hasOwn(value, key) && key !== "limitations")
+        .map((key) => [key, value[key]]),
+    ),
+    ...(Object.hasOwn(value, "limitations")
+      ? { normalized_limitations: value.limitations }
+      : {}),
+  };
+};
+const inspectPcapTarget = async () => {
+  const { parseEvidence } = await import(
+    pathToFileURL(resolve(values["runtime-root"], "dist/domain/evidence.js"))
+      .href
+  );
+  const input = {
+    path: values.path,
+    ...(values.delivery === "summary" ? { detail: "summary" } : {}),
+  };
+  const definition = catalogDefinitions.get("inspect_pcap_capture");
+  const ajv = new Ajv2020({ strict: false, validateFormats: false });
+  if (
+    !definition ||
+    !ajv.validateSchema(definition.inputSchema) ||
+    !ajv.validate(definition.inputSchema, input)
+  )
+    throw new Error("Selected PCAP request is not advertised by this runtime");
+  const inspected = await call("inspect_pcap_capture", input);
+  const n = normalized(inspected);
+  const observations = [
+    pcapObservation(
+      inspected,
+      values.delivery === "summary" ? { kind: "summary" } : undefined,
+      parseEvidence,
+    ),
+  ];
+  let capture, uris;
+  if (values.delivery === "summary") {
+    if (n.kind !== "summary" || n.parent_operation !== "inspect_pcap_capture")
+      throw new Error("Runtime returned no requested PCAP summary");
+    if (
+      !isDeepStrictEqual(n.coverage, {
+        status: "complete-within-view",
+        examined: 1,
+        total: 1,
+        next_offset: null,
+        exhausted: true,
+      })
+    )
+      throw new Error("PCAP summary coverage differs from its complete view");
+    capture = n.summary;
+    const parentEvidenceId = observations[0].parent_evidence_id;
+    const view = { kind: "pcap", facet: "http-uris", offset: 0, limit: 2 };
+    const selected = await call("inspect_analysis_view", {
+      source: { kind: "retained-evidence", evidence_id: parentEvidenceId },
+      view,
+    });
+    const page = normalized(selected);
+    const observation = pcapObservation(selected, view, parseEvidence);
+    const total = capture.retained_counts.http_request_uris;
+    const examined = Math.min(view.limit, total);
+    const expectedCoverage = {
+      status: "page",
+      examined,
+      total,
+      next_offset: examined < total ? examined : null,
+      exhausted: examined >= total,
+    };
+    if (
+      page.parent_evidence_id !== parentEvidenceId ||
+      page.parent_operation !== "inspect_pcap_capture" ||
+      page.kind !== "pcap" ||
+      page.page.facet !== "http-uris" ||
+      page.source_coverage !== capture.coverage ||
+      !isDeepStrictEqual(page.coverage, expectedCoverage)
+    )
+      throw new Error(
+        "PCAP page identity, scope or coverage differs from its parent",
+      );
+    uris = page.page.items;
+    if (
+      observations.some((item) => item.evidence_id === observation.evidence_id)
+    )
+      throw new Error("PCAP retained read reused an Evidence identity");
+    observations.push(observation);
+  } else {
+    const {
+      endpoints,
+      dns_queries,
+      tls_sni_values,
+      protocol_distribution,
+      http_request_uris,
+      unattributed_dns_addresses,
+      diagnostics,
+      ...metadata
+    } = n;
+    capture = {
+      ...metadata,
+      retained_counts: {
+        endpoints: endpoints.length,
+        dns_queries: dns_queries.length,
+        tls_sni_values: tls_sni_values.length,
+        protocol_distribution: protocol_distribution.length,
+        http_request_uris: http_request_uris.length,
+        unattributed_dns_addresses: unattributed_dns_addresses.length,
+      },
+      diagnostics_code_units:
+        diagnostics === undefined
+          ? null
+          : {
+              tshark: diagnostics.tshark_stderr.length,
+              capinfos: diagnostics.capinfos_stderr.length,
+            },
+    };
+    uris = http_request_uris.slice(0, 2);
+  }
+  if (uris.length !== Math.min(2, capture.retained_counts.http_request_uris))
+    throw new Error("Runtime did not return the requested retained URI prefix");
+  return {
+    artifact_sha256: targetSha(inspected),
+    capture,
+    http_request_uris_first2: uris,
+    delivery_observations: observations,
+    evidence_ids: observations.map((item) => item.evidence_id),
+  };
+};
+
 const workflows = {
+  ...Object.fromEntries(
+    Object.keys(SAZ_ARTIFACTS).map((artifact) => [
+      artifact,
+      () => measureSazEntry({ values, call, inputSha }),
+    ]),
+  ),
+  ...Object.fromEntries(
+    Object.keys(SIGNAL_ARTIFACTS).map((artifact) => [
+      artifact,
+      () => measureSignalEntry({ values, call, inputSha, catalogDefinitions }),
+    ]),
+  ),
+  ...Object.fromEntries(
+    Object.keys(PACKET_ARTIFACTS).map((artifact) => [
+      artifact,
+      () => measurePacketEntry({ values, call, inputSha, catalogDefinitions }),
+    ]),
+  ),
+  "wireshark-http.cap": inspectPcapTarget,
+  "wireshark-http_redirects.pcapng": inspectPcapTarget,
   "qgis-world-map.gpkg": async () => {
     const columns = ["fid", "NAME", "ISO_A3"];
     const input = {
@@ -944,6 +1207,9 @@ const report = {
   artifact_sha256: inputSha,
   artifact_sha256_after: finalInputSha,
   delivery: values.delivery,
+  saz_selection: Object.hasOwn(SAZ_ARTIFACTS, values.artifact)
+    ? values["saz-selection"]
+    : null,
   sdk_schema_mode: values.schemas,
   retained_verification: values["verify-retained"],
   native_question: NATIVE_ARTIFACTS.includes(values.artifact)
@@ -960,6 +1226,12 @@ const report = {
     values.artifact === "qgis-world-map.gpkg"
       ? values["sqlite-selection"]
       : null,
+  packet_selection: Object.hasOwn(PACKET_ARTIFACTS, values.artifact)
+    ? values["packet-selection"]
+    : null,
+  signal_selection: Object.hasOwn(SIGNAL_ARTIFACTS, values.artifact)
+    ? values["signal-selection"]
+    : null,
   provider_settings_sha256: sha(JSON.stringify(selectedProviders)),
   provider_search_path_sha256: sha(
     selectedProviders.PATH ?? process.env.PATH ?? "",

@@ -22,6 +22,8 @@ import {
   browserScopeOptions,
   observationDuration,
 } from "../cliObservationOptions.js";
+import { withCommandCancellation } from "./commandCancellation.js";
+import { finishAnalysisCommand } from "./finishAnalysisCommand.js";
 
 /** Register CLI equivalents of the passive browser MCP tools. */
 export const registerBrowserCommands = (
@@ -48,24 +50,36 @@ const registerTargetList = (
     }),
     options: z.object({ ...browserScopeOptions }),
     run: ({ args, options }) =>
-      logCliCommand(logger, "list-browser-targets", async () => {
-        const context = browserContext();
-        const input = {
-          cdp_endpoint: args.endpoint,
-          allowed_origins: options.allowedOrigins,
-        };
-        const parsed = listBrowserTargetsInputSchema.safeParse(input);
-        if (!parsed.success)
-          return browserCliError(
-            analysisInputErrorFromIssues(
-              "list_browser_targets",
-              parsed.error.issues,
-              input,
-            ),
+      withCommandCancellation((signal) =>
+        logCliCommand(logger, "list-browser-targets", async () => {
+          const context = browserContext();
+          const input = {
+            cdp_endpoint: args.endpoint,
+            allowed_origins: options.allowedOrigins,
+          };
+          const parsed = listBrowserTargetsInputSchema.safeParse(input);
+          if (!parsed.success)
+            return browserCliError(
+              analysisInputErrorFromIssues(
+                "list_browser_targets",
+                parsed.error.issues,
+                input,
+              ),
+            );
+          return await finishAnalysisCommand(
+            () => listBrowserTargets(context.provider, parsed.data, { signal }),
+            {
+              close: async () => {
+                await context.provider.close?.();
+              },
+            },
+            context.provider.identity().id,
+            "list_browser_targets",
+            undefined,
+            signal,
           );
-        const result = await listBrowserTargets(context.provider, parsed.data);
-        return result.ok ? result.value : browserCliError(result.error);
-      }),
+        }),
+      ),
   });
 };
 
@@ -84,33 +98,45 @@ const registerPageInspection = (
     }),
     options: browserPageInspectionOptions,
     run: ({ args, options }) =>
-      logCliCommand(logger, "inspect-web-page", async () => {
-        const context = browserContext();
-        const input = {
-          cdp_endpoint: args.endpoint,
-          allowed_origins: options.allowedOrigins,
-          target_id: args.targetId,
-          observation_ms: options.observationMs,
-          include_accessibility_text: options.includeAccessibilityText,
-          include_console_text: options.includeConsoleText,
-          include_json_body_shapes: options.includeJsonBodyShapes,
-          include_websocket_shapes: options.includeWebsocketShapes,
-          include_script_sources: options.includeScriptSources,
-          include_storage_keys: options.includeStorageKeys,
-          include_storage_fingerprints: options.includeStorageFingerprints,
-        };
-        const parsed = inspectWebPageInputSchema.safeParse(input);
-        if (!parsed.success)
-          return browserCliError(
-            analysisInputErrorFromIssues(
-              "inspect_web_page",
-              parsed.error.issues,
-              input,
-            ),
+      withCommandCancellation((signal) =>
+        logCliCommand(logger, "inspect-web-page", async () => {
+          const context = browserContext();
+          const input = {
+            cdp_endpoint: args.endpoint,
+            allowed_origins: options.allowedOrigins,
+            target_id: args.targetId,
+            observation_ms: options.observationMs,
+            include_accessibility_text: options.includeAccessibilityText,
+            include_console_text: options.includeConsoleText,
+            include_json_body_shapes: options.includeJsonBodyShapes,
+            include_websocket_shapes: options.includeWebsocketShapes,
+            include_script_sources: options.includeScriptSources,
+            include_storage_keys: options.includeStorageKeys,
+            include_storage_fingerprints: options.includeStorageFingerprints,
+          };
+          const parsed = inspectWebPageInputSchema.safeParse(input);
+          if (!parsed.success)
+            return browserCliError(
+              analysisInputErrorFromIssues(
+                "inspect_web_page",
+                parsed.error.issues,
+                input,
+              ),
+            );
+          return await finishAnalysisCommand(
+            () => inspectWebPage(context.provider, parsed.data, { signal }),
+            {
+              close: async () => {
+                await context.provider.close?.();
+              },
+            },
+            context.provider.identity().id,
+            "inspect_web_page",
+            undefined,
+            signal,
           );
-        const result = await inspectWebPage(context.provider, parsed.data);
-        return result.ok ? result.value : browserCliError(result.error);
-      }),
+        }),
+      ),
   });
 };
 
@@ -136,28 +162,40 @@ const registerBundleAnalysis = (
         .describe("Fetch source maps referenced by captured scripts"),
     }),
     run: ({ args, options }) =>
-      logCliCommand(logger, "analyze-web-bundle", async () => {
-        const context = browserContext();
-        const input = {
-          cdp_endpoint: args.endpoint,
-          allowed_origins: options.allowedOrigins,
-          target_id: args.targetId,
-          observation_ms: options.observationMs,
-          include_script_sources: true,
-          fetch_source_maps: options.fetchSourceMaps,
-        };
-        const parsed = analyzeWebBundleInputSchema.safeParse(input);
-        if (!parsed.success)
-          return browserCliError(
-            analysisInputErrorFromIssues(
-              "analyze_web_bundle",
-              parsed.error.issues,
-              input,
-            ),
+      withCommandCancellation((signal) =>
+        logCliCommand(logger, "analyze-web-bundle", async () => {
+          const context = browserContext();
+          const input = {
+            cdp_endpoint: args.endpoint,
+            allowed_origins: options.allowedOrigins,
+            target_id: args.targetId,
+            observation_ms: options.observationMs,
+            include_script_sources: true,
+            fetch_source_maps: options.fetchSourceMaps,
+          };
+          const parsed = analyzeWebBundleInputSchema.safeParse(input);
+          if (!parsed.success)
+            return browserCliError(
+              analysisInputErrorFromIssues(
+                "analyze_web_bundle",
+                parsed.error.issues,
+                input,
+              ),
+            );
+          return await finishAnalysisCommand(
+            () => analyzeWebBundle(context.provider, parsed.data, { signal }),
+            {
+              close: async () => {
+                await context.provider.close?.();
+              },
+            },
+            context.provider.identity().id,
+            "analyze_web_bundle",
+            undefined,
+            signal,
           );
-        const result = await analyzeWebBundle(context.provider, parsed.data);
-        return result.ok ? result.value : browserCliError(result.error);
-      }),
+        }),
+      ),
   });
 };
 
@@ -178,25 +216,37 @@ const registerObservationSession = (
       observationMs: observationDuration(10_000, 1),
     }),
     run: ({ args, options }) =>
-      logCliCommand(logger, "observe-web-session", async () => {
-        const context = browserContext();
-        const input = {
-          cdp_endpoint: args.endpoint,
-          allowed_origins: options.allowedOrigins,
-          target_id: args.targetId,
-          observation_ms: options.observationMs,
-        };
-        const parsed = observeWebSessionInputSchema.safeParse(input);
-        if (!parsed.success)
-          return browserCliError(
-            analysisInputErrorFromIssues(
-              "observe_web_session",
-              parsed.error.issues,
-              input,
-            ),
+      withCommandCancellation((signal) =>
+        logCliCommand(logger, "observe-web-session", async () => {
+          const context = browserContext();
+          const input = {
+            cdp_endpoint: args.endpoint,
+            allowed_origins: options.allowedOrigins,
+            target_id: args.targetId,
+            observation_ms: options.observationMs,
+          };
+          const parsed = observeWebSessionInputSchema.safeParse(input);
+          if (!parsed.success)
+            return browserCliError(
+              analysisInputErrorFromIssues(
+                "observe_web_session",
+                parsed.error.issues,
+                input,
+              ),
+            );
+          return await finishAnalysisCommand(
+            () => observeWebSession(context.provider, parsed.data, { signal }),
+            {
+              close: async () => {
+                await context.provider.close?.();
+              },
+            },
+            context.provider.identity().id,
+            "observe_web_session",
+            undefined,
+            signal,
           );
-        const result = await observeWebSession(context.provider, parsed.data);
-        return result.ok ? result.value : browserCliError(result.error);
-      }),
+        }),
+      ),
   });
 };

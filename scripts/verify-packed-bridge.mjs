@@ -1,19 +1,20 @@
 import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { GHIDRA_BRIDGE_SOURCES } from "../src/ghidra/GhidraBridgeSources.ts";
 
 const exec = promisify(execFile);
 const packedHopperBridge = "package/bridge/hopper_bridge.py";
-const packedGhidraBridge = "package/bridge/ghidra/ReaGhidraBridge.java";
-const packedGhidraActivator =
-  "package/bridge/ghidra/ReaGhidraBundleActivator.java";
+const packedCutterBridge = "package/bridge/cutter/rea_bridge.py";
 
 /** Check shipped bridge files; real-provider lanes verify runtime behavior. */
 export async function verifyPackedBridge({ workspace, tarball, packedFiles }) {
   for (const path of [
     packedHopperBridge,
-    packedGhidraBridge,
-    packedGhidraActivator,
+    packedCutterBridge,
+    ...Object.values(GHIDRA_BRIDGE_SOURCES).map(
+      (name) => `package/bridge/ghidra/${name}`,
+    ),
   ]) {
     if (!packedFiles.includes(path)) throw new Error(`package omitted ${path}`);
   }

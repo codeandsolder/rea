@@ -1,18 +1,19 @@
+import { analysisViewInputError } from "./analysisViewErrors.js";
 import { z } from "zod";
 import { pcapResultSchemas } from "../pcap/pcapAnalysis.js";
 import { analysisInputErrorFromIssues } from "../inputIssueProjection.js";
 import type { AnalysisError } from "../analysisErrorBase.js";
 import { err, ok, type Result } from "../result.js";
-import {
-  analysisViewInputError,
-  type AnalysisViewParent,
-  type AnalysisViewRequest,
-  type UnsignedAnalysisView,
+import type {
+  AnalysisViewParent,
+  AnalysisViewRequest,
+  UnsignedAnalysisView,
 } from "./analysisView.js";
 import {
   completeWithinViewCoverage,
   pageViewCoverage,
 } from "./analysisViewCoverage.js";
+import { analysisTextPage } from "./analysisViewText.js";
 
 const captureSchema = pcapResultSchemas.inspect_pcap_capture;
 const fields = captureSchema.shape;
@@ -288,7 +289,13 @@ export const projectPcapCaptureView = (
       view.stream === "tshark"
         ? capture.diagnostics?.tshark_stderr
         : capture.diagnostics?.capinfos_stderr;
-    const text = value?.slice(view.offset, view.offset + view.limit) ?? "";
+    const text = analysisTextPage(
+      value ?? "",
+      view.offset,
+      view.limit,
+      "Diagnostics",
+    );
+    if (!text.ok) return text;
     return ok({
       kind: "pcap",
       view,
@@ -296,10 +303,10 @@ export const projectPcapCaptureView = (
       source_coverage: capture.coverage,
       page: {
         facet: "diagnostics",
-        text,
+        text: text.value.item.text,
         status: value === undefined ? "unknown" : "retained",
       },
-      coverage: pageViewCoverage(view.offset, text.length, value?.length ?? 0),
+      coverage: text.value.coverage,
       unknowns:
         value === undefined
           ? [

@@ -62,14 +62,19 @@ export const deobfuscationFixture = async (
         bytes: await readFile(enginePath),
       });
       const start = separator + 2;
+      const signalCommand =
+        mode === "file-signal" ? "/bin/sh" : process.execPath;
       const child = await spawnOwnedProviderProcess({
         ...options,
-        command: process.execPath,
-        expectedCommand: process.execPath,
-        arguments: [
-          fileURLToPath(new URL("./producer.mjs", import.meta.url)),
-          ...options.arguments.slice(start),
-        ],
+        command: signalCommand,
+        expectedCommand: signalCommand,
+        arguments:
+          mode === "file-signal"
+            ? ["-c", "kill -XFSZ $$"]
+            : [
+                fileURLToPath(new URL("./producer.mjs", import.meta.url)),
+                ...options.arguments.slice(start),
+              ],
         env: {
           ...options.env,
           REA_DEOBFUSCATION_FIXTURE_MODE: mode,

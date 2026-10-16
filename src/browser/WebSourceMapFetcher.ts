@@ -11,6 +11,12 @@ import { isUrlLikeModuleSpecifier } from "../domain/webBundleAnalyzerAst.js";
 import { analyzeParsedJavaScriptReferences } from "../domain/javascript/javascriptSemanticAnalysis.js";
 import { traverseJavaScriptAst } from "../domain/javascript/javascriptSemanticTraversal.js";
 import { parseJavaScriptSource } from "../domain/javascript/javascriptSourceParser.js";
+import {
+  isTypeOnlyExportDeclaration,
+  isTypeOnlyImportDeclaration,
+  semanticImportEqualsSpecifier,
+} from "../domain/javascript/javascriptModuleDeclaration.js";
+import { stringValue } from "../domain/javascript/javascriptStaticAnalysisHelpers.js";
 import type {
   AnalyzeWebBundleInput,
   WebSourceMapItem,
@@ -76,6 +82,14 @@ export const fetchWebSourceMaps = async (
   signal?: AbortSignal,
   host: SourceMapFetchHost = { fetch: globalThis.fetch },
 ): Promise<SourceMaps> => {
+  throwIfAborted(signal);
+  if (requests.length === 0)
+    return webSourceMapsSchema.parse({
+      status: "not_requested",
+      requested: 0,
+      processed: 0,
+      items: [],
+    });
   const items: SourceMapItem[] = [];
   const operationController = new AbortController();
   const timeout = setTimeout(
@@ -163,6 +177,10 @@ export const fetchWebSourceMaps = async (
     items,
     ...(limitation === undefined ? {} : { limitation }),
   });
+};
+
+const throwIfAborted = (signal?: AbortSignal): void => {
+  if (signal?.aborted === true) throw signal.reason;
 };
 
 const sourceMapOutputLimitation = (unprocessed: number): string =>
@@ -728,7 +746,10 @@ const originalModuleEdges = (
       );
       continue;
     }
-    const parsed = parseJavaScriptSource(source.artifact.text);
+    const parsed = parseJavaScriptSource(
+      source.artifact.text,
+      sourceParserPath(sourceName),
+    );
     check();
     if (parsed === null) {
       incomplete.push(sourceName);
@@ -780,6 +801,17 @@ const originalModuleEdges = (
     });
   }
   return { edges, incomplete };
+};
+
+/** Select parser semantics from the source URL path, excluding query/fragment. */
+const sourceParserPath = (source: string): string => {
+  try {
+    return new URL(source).pathname;
+  } catch (cause: unknown) {
+    // Unresolved source identities can still carry a useful relative path.
+    void cause;
+    return source;
+  }
 };
 
 const checkOperation = (
@@ -1046,32 +1078,34 @@ const originalDependency = (
     t.isExportAllDeclaration(node) ||
     t.isExportNamedDeclaration(node)
   )
-    return node.source === null || node.source === undefined
+    return node.source === null ||
+      node.source === undefined ||
+      (t.isImportDeclaration(node)
+        ? isTypeOnlyImportDeclaration(node)
+        : isTypeOnlyExportDeclaration(node))
       ? null
       : { kind: "static_import", specifier: node.source.value };
-  if (t.isImportExpression(node) && t.isStringLiteral(node.source))
-    return { kind: "dynamic_import", specifier: node.source.value };
+  if (t.isImportExpression(node)) {
+    const specifier = stringValue(node.source);
+    return specifier === undefined
+      ? null
+      : { kind: "dynamic_import", specifier };
+  }
   if (
     (t.isCallExpression(node) || t.isOptionalCallExpression(node)) &&
-    t.isIdentifier(node.callee, { name: "require" }) &&
-    t.isStringLiteral(node.arguments[0])
-  )
-    return {
-      kind: "require",
-      specifier: node.arguments[0].value,
-      requireCallee: node.callee,
-    };
+    t.isIdentifier(node.callee, { name: "require" })
+  ) {
+    const specifier = stringValue(node.arguments[0]);
+    return specifier === undefined
+      ? null
+      : { kind: "require", specifier, requireCallee: node.callee };
+  }
   // `import x = require("m")` is only legal at module top level and always
-  // refers to the host loader, so it needs no unbound-`require` check. The
-  // `moduleReference` is an entity name for a local alias instead, which
-  // declares no dependency.
-  if (
-    t.isTSImportEqualsDeclaration(node) &&
-    t.isTSExternalModuleReference(node.moduleReference)
-  )
-    return {
-      kind: "require",
-      specifier: node.moduleReference.expression.value,
-    };
+  // refers to the host loader, so it needs no unbound-`require` check. An
+  // entity-name alias or an erased `import type` declares no dependency.
+  if (t.isTSImportEqualsDeclaration(node)) {
+    const specifier = semanticImportEqualsSpecifier(node);
+    return specifier === null ? null : { kind: "require", specifier };
+  }
   return null;
 };

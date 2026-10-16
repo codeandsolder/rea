@@ -95,6 +95,8 @@ export interface FakeOptions {
   readonly webSocketWithoutFrames?: boolean;
   readonly invalidBinaryWebSocketEvent?: boolean;
   readonly sourceMapBody?: string;
+  /** Accept a source-map request and leave the response open. */
+  readonly hangSourceMap?: boolean;
   readonly sourceMapRedirect?: string;
   readonly sessionTimeline?:
     | "same_origin"
@@ -107,6 +109,7 @@ export interface FakeOptions {
   readonly cachedResponseBody?: string;
   readonly invalidResponseBodyBase64?: boolean;
   readonly webMcpTools?: boolean;
+  readonly webMcpConsequential?: JsonValue;
   readonly webMcpSameUrlRegistrations?: "retain" | "remove-second";
   readonly webMcpFrameCount?: number;
   readonly webMcpSchemaPropertyCount?: number;

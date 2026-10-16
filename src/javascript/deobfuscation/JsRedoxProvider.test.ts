@@ -24,16 +24,21 @@ it.skipIf(process.platform !== "linux" || process.arch !== "x64")(
       max_iterations: 16,
     });
     if (!response.ok) throw response.error;
+    if (response.value.subject === null)
+      throw new Error("expected JavaScript Evidence subject");
+    const normalized = javascriptDeobfuscationResultSchema.parse(
+      response.value.normalized_result,
+    );
     expect(response.value).toMatchObject({
       operation: "deobfuscate_javascript_source",
       provider: { id: "js-redox", version: "0.1.0" },
-      normalized_result: {
-        status: "changed",
-        runtime_execution: "not-performed",
-        proof: {
-          input_sha256: response.value.subject.sha256,
-          output_sha256: response.value.normalized_result.output.sha256,
-        },
+    });
+    expect(normalized).toMatchObject({
+      status: "changed",
+      runtime_execution: "not-performed",
+      proof: {
+        input_sha256: response.value.subject.digest.sha256,
+        output_sha256: normalized.output.sha256,
       },
     });
     await expect(
@@ -129,7 +134,7 @@ it
       const result = javascriptDeobfuscationResultSchema.parse(
         response.value.normalized_result,
       );
-      expect(result.status).toBe("unchanged");
+      expect(result.status).toBe("changed");
       expect(
         JSON.parse(await readFile(result.manifest.path, "utf8")).engine,
       ).toMatchObject({ path: selected, resolved_path: canonical });
@@ -248,7 +253,8 @@ it.skipIf(process.platform !== "linux" || process.arch !== "x64")(
       output_directory: fixture.output,
     });
     if (response.ok) throw new Error("expected report capacity failure");
-    expect(response.error).toBeInstanceOf(AnalysisResourceConstraintError);
+    if (!(response.error instanceof AnalysisResourceConstraintError))
+      throw response.error;
     expect(response.error.reportedLimits).toMatchObject({
       report_bytes_ceiling: JS_REDOX_LIMITS.reportBytes,
     });
@@ -291,11 +297,11 @@ it.skipIf(process.platform !== "linux" || process.arch !== "x64")(
 it.skipIf(process.platform !== "linux" || process.arch !== "x64")(
   "shares one wall deadline across the version and transformation launches",
   async () => {
-    const fixture = await deobfuscationFixture("slow-both");
+    const fixture = await deobfuscationFixture("shared-deadline");
     onTestFinished(async () => fixture.provider.close?.());
     const limits = JS_REDOX_LIMITS as { timeoutMs: number };
     const originalTimeout = limits.timeoutMs;
-    limits.timeoutMs = 1_000;
+    limits.timeoutMs = 2_200;
     onTestFinished(() => {
       limits.timeoutMs = originalTimeout;
     });
@@ -500,7 +506,9 @@ it.skipIf(process.platform !== "linux" || process.arch !== "x64")(
         await originalCommit.call(this, signal);
       },
     );
-    onTestFinished(() => vi.restoreAllMocks());
+    onTestFinished(() => {
+      vi.restoreAllMocks();
+    });
     const response = await fixture.service.deobfuscate(
       { path: fixture.path, output_directory: fixture.output },
       { signal: controller.signal },

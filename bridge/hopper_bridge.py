@@ -644,7 +644,7 @@ def _analyze_function(document, params):
             "end": _hex(_basic_block_end(procedure, block)),
             "successors": sorted(set(successors), key=lambda value: int(value, 16)),
         })
-    pseudo = _pseudocode(document, procedure) or ""
+    pseudo = _pseudocode(document, procedure)
     assembly_lines = _assembly(procedure).splitlines()
     callers = sorted((_procedure_identity(item) for item in procedure.getAllCallerProcedures()), key=lambda item: int(item["address"], 16))
     callees = sorted((_procedure_identity(item) for item in procedure.getAllCalleeProcedures()), key=lambda item: int(item["address"], 16))
@@ -706,7 +706,7 @@ def _analyze_function(document, params):
             "signature": procedure.signatureString(),
             "locals": _procedure_locals(procedure),
         },
-        "pseudocode": pseudo,
+        "pseudocode": pseudo or "",
         "assembly": assembly_lines,
         "comments": comments,
         "callers": callers, "callees": callees,
@@ -718,6 +718,12 @@ def _analyze_function(document, params):
         "basic_blocks": blocks,
         "native_api": None,
         "native_value_flow": None,
+        "facet_availability": {
+            "pseudocode": {"available": True} if pseudo is not None else _unavailable("Hopper did not supply pseudocode."),
+            **{facet: {"available": True} for facet in (
+                "assembly", "comments", "callers", "callees", "references", "strings_names", "cfg"
+            )},
+        },
         "limitations": [
             "Native CallReference classifications are observed where available; detailed reference flags remain unknown.",
             "Hopper's public Python API does not expose equivalent external or thunk classification in this dossier.",
@@ -730,7 +736,12 @@ def _analyze_function(document, params):
 def _dispatch(method, params):
     """Dispatch only the closed operation set implemented by REA's public tools."""
     if method == "health":
-        return {"name": "REA Hopper bridge", "version": "1.0.0", "run_id": REA_RUN_ID}
+        return {
+            "name": "REA Hopper bridge",
+            "version": "1.0.0",
+            "run_id": REA_RUN_ID,
+            "process_id": os.getpid(),
+        }
     if method in ("shutdown", "shutdown_document"):
         document = _session_document()
         if document is None:
@@ -1046,6 +1057,10 @@ def _serve_connection(connection):
                 ):
                     raise PermissionError("Invalid bridge capability")
                 authenticated = True
+                # The connection grace period only bounds unauthenticated idle
+                # clients. Native analysis and a connected owner's idle time
+                # remain unbounded after capability validation.
+                connection.settimeout(None)
                 _write_message(file, {"id": request_id, "event": {
                     "type": "progress",
                     "phase": "hopper_bridge",
@@ -1137,13 +1152,17 @@ def _run():
     server.bind(REA_SOCKET)
     os.chmod(REA_SOCKET, 0o600)
     server.listen(1)
+    # A bridge can start after its caller's startup/cleanup deadline. Bound
+    # the first accept as well as reconnects so an orphan cannot pin Hopper's
+    # dedicated Python thread and prevent later documents from starting REA.
+    server.settimeout(REA_RECONNECT_TIMEOUT_SECONDS)
     try:
         while True:
             try:
                 connection, _ = server.accept()
             except socket.timeout:
                 break
-            connection.settimeout(None)
+            connection.settimeout(REA_RECONNECT_TIMEOUT_SECONDS)
             if _serve_connection(connection):
                 break
             # Match REA's cleanup handshake budget without pinning Hopper's

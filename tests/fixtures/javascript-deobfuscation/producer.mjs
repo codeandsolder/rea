@@ -4,8 +4,10 @@ import { readFile, writeFile, unlink, symlink } from "node:fs/promises";
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const args = process.argv.slice(2);
 const mode = process.env.REA_DEOBFUSCATION_FIXTURE_MODE ?? "normal";
-if (mode === "slow-both")
-  await new Promise((resolve) => setTimeout(resolve, 600));
+if (mode === "shared-deadline") {
+  const delayMs = args.includes("--version") ? 800 : 1_800;
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
+}
 if (mode === "nonzero") {
   console.log("fixture stdout diagnostic");
   console.error("fixture stderr diagnostic");

@@ -84,7 +84,12 @@ export const decodeQlogCapture = (
           "Record ordinal is derived from trace/event source traversal, not global time order. Qlog lengths and FIN do not expose original HTTP body bytes or establish network completeness.",
         ],
       });
-      collectTransportFacts(projection, ordinal, { fact, streams, excluded });
+      collectTransportFacts(projection, ordinal, {
+        fact,
+        streams,
+        excluded,
+        name: object(event) && typeof event.name === "string" ? event.name : "",
+      });
     }
     for (const stream of streams.values()) {
       summarizeStream(stream);
@@ -95,10 +100,10 @@ export const decodeQlogCapture = (
         ...stream.reported_final_sizes,
         ...stream.covered_ranges.flatMap((r) => [r.start, r.end]),
       ];
+      // A stream can have more contributions than call arguments allow.
       if (numericValues.some(excluded))
-        fact.incomplete_fact_records.push(
-          ...stream.contributions.map((c) => c.record_ordinal),
-        );
+        for (const contribution of stream.contributions)
+          fact.incomplete_fact_records.push(contribution.record_ordinal);
       else fact.streams.push(stream);
     }
     fact.incomplete_fact_records = [...new Set(fact.incomplete_fact_records)];
@@ -223,14 +228,25 @@ const collectTransportFacts = (
     fact: Trace;
     streams: Map<string, Stream>;
     excluded: (value: string) => boolean;
+    /** Validated source event name, before declarations are applied. */
+    name: string;
   },
 ): void => {
-  const { fact, streams, excluded } = state;
+  const { fact, streams, excluded, name } = state;
   if (!object(projection.reported) || !object(projection.reported.data)) {
     fact.incomplete_fact_records.push(ordinal);
     return;
   }
   const visible = projection.reported;
+  // Facts are selected by event name, so a declaration that hides the name
+  // of a loss or packet event omits its facts like any other hidden field.
+  if (
+    (name === "recovery:packet_lost" || packetEvent(name)) &&
+    visible.name !== name
+  ) {
+    fact.incomplete_fact_records.push(ordinal);
+    return;
+  }
   const data = visible.data;
   if (!object(data)) return;
   const literals = new Map(

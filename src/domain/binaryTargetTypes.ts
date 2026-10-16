@@ -9,6 +9,7 @@ export const BINARY_ARCHITECTURES = [
   "mips",
   "6502",
   "riscv",
+  "powerpc",
 ] as const;
 export type BinaryArchitecture = (typeof BINARY_ARCHITECTURES)[number];
 
@@ -24,10 +25,19 @@ export interface ElfFamilyMetadata {
   readonly flags: number;
 }
 
+/** Referenced CodeView debug symbols from a PE debug directory. */
+export interface PeCodeViewRecord {
+  readonly pdbPath: string;
+  readonly pdbFileName: string;
+  readonly guid: string | null;
+  readonly age: number;
+}
+
 /** Families whose parsed target variant carries `ElfFamilyMetadata`. */
 export const ELF_METADATA_ARCHITECTURES = [
   "mips",
   "riscv",
+  "powerpc",
 ] as const satisfies readonly BinaryArchitecture[];
 export type ElfMetadataArchitecture =
   (typeof ELF_METADATA_ARCHITECTURES)[number];
@@ -48,6 +58,8 @@ export type HeaderArchitecture = Exclude<
 export interface MipsElfMetadata extends ElfFamilyMetadata {
   /** Undefined until inspected; null means no ABI record was observed. */
   readonly abiFlags?: MipsAbiFlags | null;
+  /** Undefined until inspected; null means no GNU attribute section was observed. */
+  readonly gnuAttributes?: MipsGnuAttributes | null;
   /** Unavailable declaration sources; missing records there remain unknown. */
   readonly limitations?: readonly string[];
   /** Complete dynamic REL declarations, or the reason they could not be inspected. */
@@ -76,11 +88,22 @@ export interface MipsAbiFlags {
   readonly flags2: number;
 }
 
+/** File-scope GNU object attributes parsed from `SHT_GNU_ATTRIBUTES`. */
+export interface MipsGnuAttributes {
+  /** Tag_GNU_MIPS_ABI_FP; null means this file did not declare the tag. */
+  readonly fpAbi: number | null;
+  /** Tag_GNU_MIPS_ABI_MSA vector-argument ABI; null means undeclared. */
+  readonly msa: number | null;
+}
+
 /**
  * ELF class and flags retain the width and ABI declarations used by this lane.
  * ISA extensions in `.riscv.attributes` are not inspected by this header parser.
  */
 export type RiscvElfMetadata = ElfFamilyMetadata;
+
+/** Raw PowerPC declarations; family identity does not select a processor variant. */
+export type PowerPcElfMetadata = ElfFamilyMetadata;
 
 /** Byte range of the selected slice inside its universal Mach-O container. */
 export interface UniversalMachOSlice {
@@ -132,6 +155,15 @@ export type BinaryTarget =
       readonly executableRole?: never;
       readonly managed?: never;
     })
+  | (BinaryTargetIdentity & {
+      readonly kind: "executable";
+      readonly format: "elf";
+      readonly architecture: "powerpc";
+      readonly availableArchitectures: readonly "powerpc"[];
+      readonly powerpc: PowerPcElfMetadata;
+      readonly executableRole?: never;
+      readonly managed?: never;
+    })
   | (ExecutableTarget & {
       readonly format: "mach-o" | "elf" | "dos-mz" | "dos-com";
       readonly universalSlice?: never;
@@ -163,6 +195,8 @@ export type BinaryTarget =
     })
   | (ExecutableTarget & {
       readonly format: "pe";
+      /** Original COFF machine; undefined means this header fact is unavailable. */
+      readonly peMachine?: number;
       /** Provider-neutral PE image role observed from COFF characteristics. */
       readonly executableRole:
         | "application"
@@ -170,6 +204,8 @@ export type BinaryTarget =
         | "non-executable";
       /** Whether the PE declares a non-empty CLI header data-directory entry. */
       readonly managed: boolean;
+      /** Referenced CodeView debug symbols from the PE debug directory, if present. */
+      readonly codeView?: PeCodeViewRecord;
     })
   | (BinaryTargetIdentity &
       NonExecutableMetadata & {

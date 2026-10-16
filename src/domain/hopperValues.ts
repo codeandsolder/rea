@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { fixedTupleSchema } from "./fixedTupleSchema.js";
 import { addressCoordinate } from "./native/addressCoordinate.js";
 
 import type { JsonValue } from "./jsonValue.js";
@@ -7,7 +8,6 @@ import { err, ok, type Result } from "./result.js";
 import { nativeApiBoundarySchema } from "./native/nativeApiBoundary.js";
 import { nativeValueFlowSchema } from "./native/nativeValueFlow.js";
 import { AnalysisOutputError } from "./analysisErrorCore.js";
-import { HopperProtocolError } from "./hopperErrors.js";
 
 export interface AddressedName {
   readonly address: string;
@@ -26,17 +26,14 @@ export interface SegmentSummary {
 }
 
 /** Return a bounded byte distance between canonical addresses in one space. */
-export const addressDistance = (start: string, end: string): number => {
+export const addressDistance = (start: string, end: string): number | null => {
   const left = addressCoordinate(start);
   const right = addressCoordinate(end);
-  if (left === null || right === null || left.space !== right.space) return 0;
+  if (left === null || right === null || left.space !== right.space)
+    return null;
   const distance = right.offset - left.offset;
-  if (distance <= 0n) return 0;
-  return Number(
-    distance > BigInt(Number.MAX_SAFE_INTEGER)
-      ? BigInt(Number.MAX_SAFE_INTEGER)
-      : distance,
-  );
+  if (distance < 0n || distance > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  return Number(distance);
 };
 
 const procedureMapSchema = z.record(z.string(), z.string());
@@ -290,10 +287,10 @@ const swiftStringLiteralFields = {
   value: z
     .string()
     .describe("Decoded UTF-8 text, including the canonical empty string."),
-  registers: z.tuple([z.string(), z.string()]),
-  words: z
-    .tuple([z.string(), z.string()])
-    .describe("Observed constant register values, in register order."),
+  registers: fixedTupleSchema([z.string(), z.string()]),
+  words: fixedTupleSchema([z.string(), z.string()]).describe(
+    "Observed constant register values, in register order.",
+  ),
 };
 
 /** A Swift String literal decoded from the two words of its ABI value, not a data reference. */
@@ -320,15 +317,15 @@ const swiftStringLiteralOmissionFields = {
   source_address: swiftStringLiteralFields.source_address,
   byte_length: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
   reason: z
-    .literal("capacity")
+    .enum(["capacity", "unresolved_jump"])
     .describe(
-      "The record did not fit the provider's memory budget for this dossier; decoding stopped here, so later use sites were not examined.",
+      "Why this candidate is omitted: capacity stopped decoding, or an unresolved jump left its use unknown.",
     ),
   registers: swiftStringLiteralFields.registers,
   words: swiftStringLiteralFields.words,
 };
 
-/** A Swift literal whose layout matched but whose record did not fit; decoding stopped there. */
+/** A Swift literal candidate omitted because decoding capacity or control flow left it unknown. */
 export const swiftStringLiteralOmissionSchema = z.discriminatedUnion(
   "representation",
   [
@@ -411,7 +408,7 @@ export const functionDossierSchema = z
       .array(swiftStringLiteralOmissionSchema)
       .exactOptional()
       .describe(
-        "The literal at which decoding stopped for capacity. Present exactly when swift_string_literals is present; empty when decoding examined every use site.",
+        "Literal candidates omitted for capacity or unresolved control flow. Present exactly when swift_string_literals is present; empty when all examined use sites were classified.",
       ),
     basic_blocks: z.array(
       z
@@ -460,10 +457,11 @@ export const parseFunctionDossier = (
       );
 };
 
-/** Parse Hopper's direct or wrapped procedure map into stable entries. */
+/** Parse a provider's direct or wrapped procedure map into stable entries. */
 export const parseProcedures = (
   value: JsonValue,
-): Result<readonly AddressedName[], HopperProtocolError> => {
+  operation = "list_procedures",
+): Result<readonly AddressedName[], AnalysisOutputError> => {
   const parsed = procedureMapSchema.safeParse(
     unwrapProperty(value, "procedures"),
   );
@@ -474,43 +472,48 @@ export const parseProcedures = (
           name,
         })),
       )
-    : invalid("procedure map", parsed.error);
+    : invalid(operation, "procedure map", parsed.error);
 };
 
-/** Parse Hopper's direct or wrapped list of address/name records. */
+/** Parse a provider's direct or wrapped list of address/name records. */
 export const parseNames = (
   value: JsonValue,
-): Result<readonly AddressedName[], HopperProtocolError> => {
+  operation = "list_names",
+): Result<readonly AddressedName[], AnalysisOutputError> => {
   const unwrapped = unwrapProperty(value, "names");
   const records = addressedNamesSchema.safeParse(unwrapped);
   if (records.success) return ok(records.data);
   const map = addressedNameMapSchema.safeParse(unwrapped);
   return map.success
     ? ok(Object.entries(map.data).map(([address, name]) => ({ address, name })))
-    : invalid("name list", map.error);
+    : invalid(operation, "name list", map.error);
 };
 
-/** Parse callee/caller strings from direct or wrapped Hopper results. */
+/** Parse callee/caller strings from direct or wrapped provider results. */
 export const parseRelatedAddresses = (
   value: JsonValue,
   relation: "callees" | "callers",
-): Result<readonly string[], HopperProtocolError> => {
+  operation = relation === "callees"
+    ? "procedure_callees"
+    : "procedure_callers",
+): Result<readonly string[], AnalysisOutputError> => {
   const parsed = z.array(z.string()).safeParse(unwrapProperty(value, relation));
   return parsed.success
     ? ok(parsed.data)
-    : invalid(`${relation} list`, parsed.error);
+    : invalid(operation, `${relation} list`, parsed.error);
 };
 
 /** Preserve reported address context in direct or wrapped provider segments. */
 export const parseSegments = (
   value: JsonValue,
-): Result<readonly SegmentSummary[], HopperProtocolError> => {
+  operation = "list_segments",
+): Result<readonly SegmentSummary[], AnalysisOutputError> => {
   const parsed = z
     .array(segmentSchema)
     .safeParse(unwrapProperty(value, "segments"));
   return parsed.success
     ? ok(parsed.data)
-    : invalid("segment list", parsed.error);
+    : invalid(operation, "segment list", parsed.error);
 };
 
 /** Return a reported overview base only when every parsed segment agrees. */
@@ -524,30 +527,32 @@ export const parseSegmentImageBase = (
     : undefined;
 };
 
-/** Parse direct or wrapped Hopper document names. */
+/** Parse direct or wrapped provider document names. */
 export const parseDocuments = (
   value: JsonValue,
-): Result<readonly string[], HopperProtocolError> => {
+  operation = "list_documents",
+): Result<readonly string[], AnalysisOutputError> => {
   const parsed = z
     .array(z.string())
     .safeParse(unwrapProperty(value, "documents"));
   return parsed.success
     ? ok(parsed.data)
-    : invalid("document list", parsed.error);
+    : invalid(operation, "document list", parsed.error);
 };
 
 /** Parse a direct or wrapped list when only its cardinality is required. */
 export const parseListCount = (
   value: JsonValue,
   property: string,
-): Result<number, HopperProtocolError> => {
+  operation = property === "procedures" ? "list_procedures" : "list_strings",
+): Result<number, AnalysisOutputError> => {
   const unwrapped = unwrapProperty(value, property);
   const list = z.array(z.unknown()).safeParse(unwrapped);
   if (list.success) return ok(list.data.length);
   const map = z.record(z.string(), z.unknown()).safeParse(unwrapped);
   return map.success
     ? ok(Object.keys(map.data).length)
-    : invalid(`${property} list`, map.error);
+    : invalid(operation, `${property} list`, map.error);
 };
 
 const unwrapProperty = (value: JsonValue, property: string): JsonValue => {
@@ -563,11 +568,16 @@ const unwrapProperty = (value: JsonValue, property: string): JsonValue => {
 };
 
 const invalid = <T>(
+  operation: string,
   expected: string,
   cause: z.ZodError,
-): Result<T, HopperProtocolError> =>
+): Result<T, AnalysisOutputError> =>
   err(
-    new HopperProtocolError(`Hopper returned an invalid ${expected}`, {
-      cause,
-    }),
+    new AnalysisOutputError(
+      operation,
+      `Provider returned an invalid ${expected}`,
+      {
+        cause,
+      },
+    ),
   );

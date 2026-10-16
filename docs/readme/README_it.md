@@ -1,6 +1,7 @@
 <div align="center">
 
 [English](../../README.md) · [简体中文](README_zh.md) · [繁體中文](README_zh-TW.md) · [日本語](README_ja.md) · [한국어](README_ko.md) · [Türkçe](README_tr.md) · [Русский](README_ru.md) · [Tiếng Việt](README_vi.md) · [ไทย](README_th.md) · [Deutsch](README_de.md) · [Español](README_es.md) · [Français](README_fr.md) · [Українська](README_uk.md) · [Polski](README_pl.md) · [Português (Brasil)](README_pt-BR.md) · [العربية](README_ar.md) · [فارسی](README_fa.md) · [Bahasa Indonesia](README_id.md) · **Italiano**
+· [Ελληνικά](README_el.md)
 
 # REA: Reverse Engineer Anything
 
@@ -19,9 +20,17 @@
 
 **[Sito web](https://rea.tools/it/) · [Guide](https://rea.tools/it/guides/) · [Showcase](https://rea.tools/it/showcase/)**
 
-[Avvio rapido](#avvio-rapido) · [Come funziona REA](#come-funziona-rea) · [Cosa puoi analizzare](#cosa-puoi-analizzare) · [Showcase](#showcase) · [FAQ](#faq) · [Documentazione](#documentazione)
+[Avvio rapido](#avvio-rapido) · [Come funziona REA](#come-funziona-rea) · [Cosa puoi analizzare](#cosa-puoi-analizzare) · [Showcase](#showcase) · [FAQ](#faq) · [Strumenti GNU objdump e Rizin](../reverse-engineering-tools.md) · [Documentazione](#documentazione)
 
 <code>npx rea-agents setup</code>
+
+</div>
+
+> [!IMPORTANT]
+> Fonti ufficiali di REA: [morluto/rea](https://github.com/morluto/rea), [rea.tools](https://rea.tools/), [rea-agents](https://www.npmjs.com/package/rea-agents) (npm).
+> Segui i link di installazione e delle versioni pubblicate da queste fonti ufficiali. Un nome di repository simile o un README copiato non dimostra che un download sia ufficiale.
+
+<div align="center">
 
 <br />
 
@@ -133,34 +142,35 @@ Il tuo agente chiama REA tramite MCP per ispezionare il bersaglio e tracciare il
 
 REA richiede Node.js 22.x (>=22.19), 24.x (>=24.11) o 26+, oltre a npm. Strumenti aggiuntivi e supporto host dipendono dal bersaglio:
 
-| Obiettivo                    | Cosa restituisce REA                                                                              | Requisiti e guida                                                                                                                |
-| ---------------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Binari nativi                | Pseudocodice, assembly, stringhe, simboli, chiamate e riferimenti                                 | Hopper, Ghidra o IDA; [analisi nativa](https://rea.tools/it/guides/native/)                                                      |
-| Layout ELF offline           | Sezioni, segmenti, simboli/relocazioni originali e candidati mitigazioni statiche                 | pwntools fornito dal chiamante su Linux x64; [diagnostica binaria](../binary-diagnostics.md)                                     |
-| Artefatto WASM               | Convalida, sezioni, forme WAT di import/export esatte e WAT decodificato                          | WABT 1.0.42 fornito dal chiamante; `inspect_wasm_artifact`                                                                       |
-| Bytecode EVM                 | Selettori di dispatch, offset dei byte, argomenti inferiti e mutabilità                           | Carrier raw/hex locale; [guida EVM offline](../evm-bytecode.md)                                                                  |
-| Crash Linux registrati       | Note grezze, registri/segnai di ogni thread registrato e candidati mapping opzionali              | pwntools fornito dal chiamante; GDB/pwndbg opzionale; [crash registrati](../recorded-crashes.md)                                 |
-| JavaScript / Electron        | Moduli, import, source map, route, IPC e relazioni con add-on nativi                              | Node.js e npm; [analisi delle applicazioni](https://rea.tools/it/guides/javascript/); [js-redox](../javascript-deobfuscation.md) |
-| Siti web                     | Struttura della pagina, script, osservazioni di rete e screenshot richiesti                       | Un browser della famiglia Chrome; [analisi browser](https://rea.tools/it/guides/browser/)                                        |
-| Acquisizioni di rete salvate | Richieste, risposte, payload esposti e posizioni sorgente                                         | HAR; mitmdump su Linux per acquisizioni mitmproxy native; [guida alle acquisizioni](../web-network-captures.md)                  |
-| Captured di pacchetti        | Endpoint, DNS, TLS SNI, distribuzione dei protocolli e richieste HTTP                             | tshark e capinfos forniti dal chiamante; [guida pcap](../pcap-analysis.md)                                                       |
-| Assembly .NET                | Metadati, istruzioni CIL, dipendenze native dichiarate e confronti di build                       | Nessuno (solo statico); [guida managed-code](../managed-code-analysis.md)                                                        |
-| APK Android                  | Dichiarazioni manifest, classi, metodi decompilati e riferimenti                                  | JADX headless e un JDK completo su Linux/macOS/Windows x64; [guida Android](../android-analysis.md)                              |
-| Dispositivi Android          | Dispositivi, pacchetti, processi, log, dump, screenshot e trasferimenti APK/file                  | adb fornito dal chiamante (emulatore o hardware); [guida ADB](../adb-device-analysis.md)                                         |
-| Progetti JEB                 | Unità di progetto dal motore, digest degli artifact e pseudocodice di tipi/metodi                 | Client JEB avviato dal chiamante via MCP, selezionato con REA_JEB_MCP_URL; [guida JEB](../jeb-analysis.md)                       |
-| Risorse Android              | Manifest decodificato, tabelle stringhe, lingue e dati di versione                                | Launcher Apktool fornito dal chiamante; [guida alle risorse](../apktool-resource-analysis.md)                                    |
-| App Flutter                  | Hash dello snapshot Dart, digest delle librerie per ABI e provenienza della build del motore      | Nessuno (analisi APK statica); [guida Flutter](../flutter-analysis.md)                                                           |
-| Firmware                     | Regioni, risultati di estrazione e passaggi all'analisi nativa                                    | Binwalk / Unblob su Linux; [guida firmware](../firmware-analysis.md)                                                             |
-| Pacchetti registrati         | Campi selezionati, valori ripetuti, filtri e regole di decodifica                                 | Linux: TShark 4.x + prlimit; [guida alle catture](../packet-captures.md)                                                         |
-| Segnali logici registrati    | Annotazioni del decoder, intervalli di campioni e diagnostica                                     | Linux: sigrok-cli 0.7.2 + prlimit; [guida ai segnali](../signal-recordings.md)                                                   |
-| Pacchetti e risorse          | Inventari file, digest, plist, anatomia dei bundle Apple e risorse estratte                       | [Guida artifact e JavaScript](../javascript-artifact-reconstruction.md), [Applicazioni Apple](../apple-application-analysis.md)  |
-| Comportamento dei processi   | Output del terminale, interazioni, osservazioni su uscita e filesystem ed confronti di esecuzione | Linux/macOS con un PTY nativo; [cattura dei processi](../process-capture.md)                                                     |
+| Obiettivo                    | Cosa restituisce REA                                                                              | Requisiti e guida                                                                                                               |
+| ---------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Binari nativi                | Pseudocodice, assembly, stringhe, simboli, chiamate e riferimenti                                 | Hopper, Ghidra o IDA; [analisi nativa](../native-investigation.md)                                                              |
+| Layout ELF offline           | Sezioni, segmenti, simboli/relocazioni originali e candidati mitigazioni statiche                 | pwntools fornito dal chiamante su Linux x64; [diagnostica binaria](../binary-diagnostics.md)                                    |
+| Artefatto WASM               | Convalida, sezioni, forme WAT di import/export esatte e WAT decodificato                          | WABT 1.0.42 fornito dal chiamante; `inspect_wasm_artifact`                                                                      |
+| Bytecode EVM                 | Selettori di dispatch, offset dei byte, argomenti inferiti e mutabilità                           | Carrier raw/hex locale; [guida EVM offline](../evm-bytecode.md)                                                                 |
+| Rust binaries                | Embedded cargo-auditable dependency list                                                          | [Rust binaries](../rust-binaries.md)                                                                                            |
+| Crash Linux registrati       | Note grezze, registri/segnai di ogni thread registrato e candidati mapping opzionali              | pwntools fornito dal chiamante; GDB/pwndbg opzionale; [crash registrati](../recorded-crashes.md)                                |
+| JavaScript / Electron        | Moduli, import, source map, route, IPC e relazioni con add-on nativi                              | Node.js e npm; [analisi delle applicazioni](../javascript-application-workflows.md); [js-redox](../javascript-deobfuscation.md) |
+| Siti web                     | Struttura della pagina, script, osservazioni di rete e screenshot richiesti                       | Un browser della famiglia Chrome; [analisi browser](../browser-observation.md)                                                  |
+| Acquisizioni di rete salvate | Richieste, risposte, payload esposti e posizioni sorgente                                         | HAR; mitmdump su Linux per acquisizioni mitmproxy native; [guida alle acquisizioni](../web-network-captures.md)                 |
+| Captured di pacchetti        | Endpoint, DNS, TLS SNI, distribuzione dei protocolli e richieste HTTP                             | tshark e capinfos forniti dal chiamante; [guida pcap](../pcap-analysis.md)                                                      |
+| Assembly .NET                | Metadati, istruzioni CIL, dipendenze native dichiarate e confronti di build                       | Nessuno (solo statico); [guida managed-code](../managed-code-analysis.md)                                                       |
+| APK Android                  | Dichiarazioni manifest, classi, metodi decompilati e riferimenti                                  | JADX headless e un JDK completo su Linux/macOS/Windows x64; [guida Android](../android-analysis.md)                             |
+| Dispositivi Android          | Dispositivi, pacchetti, processi, log, dump, screenshot e trasferimenti APK/file                  | adb fornito dal chiamante (emulatore o hardware); [guida ADB](../adb-device-analysis.md)                                        |
+| Progetti JEB                 | Unità di progetto dal motore, digest degli artifact e pseudocodice di tipi/metodi                 | Client JEB avviato dal chiamante via MCP, selezionato con REA_JEB_MCP_URL; [guida JEB](../jeb-analysis.md)                      |
+| Risorse Android              | Manifest decodificato, tabelle stringhe, lingue e dati di versione                                | Launcher Apktool fornito dal chiamante; [guida alle risorse](../apktool-resource-analysis.md)                                   |
+| App Flutter                  | Hash dello snapshot Dart, digest delle librerie per ABI e provenienza della build del motore      | Nessuno (analisi APK statica); [guida Flutter](../flutter-analysis.md)                                                          |
+| Firmware                     | Regioni, risultati di estrazione e passaggi all'analisi nativa                                    | Binwalk / Unblob su Linux; [guida firmware](../firmware-analysis.md)                                                            |
+| Pacchetti registrati         | Campi selezionati, valori ripetuti, filtri e regole di decodifica                                 | Linux: TShark 4.x + prlimit; [guida alle catture](../packet-captures.md)                                                        |
+| Segnali logici registrati    | Annotazioni del decoder, intervalli di campioni e diagnostica                                     | Linux: sigrok-cli 0.7.2 + prlimit; [guida ai segnali](../signal-recordings.md)                                                  |
+| Pacchetti e risorse          | Inventari file, digest, plist, anatomia dei bundle Apple e risorse estratte                       | [Guida artifact e JavaScript](../javascript-artifact-reconstruction.md), [Applicazioni Apple](../apple-application-analysis.md) |
+| Comportamento dei processi   | Output del terminale, interazioni, osservazioni su uscita e filesystem ed confronti di esecuzione | Linux/macOS con un PTY nativo; [cattura dei processi](../process-capture.md)                                                    |
 
 L'ispezione statica di JavaScript e .NET legge i file forniti senza eseguire l'applicazione. La cattura a runtime esegue o interagisce con il bersaglio selezionato usando i tuoi permessi utente; ogni guida runtime descrive i suoi effetti.
 
 <a id="choosing-a-deep-analysis-provider"></a>
 
-I formati nativi e il supporto host variano in base al provider. Vedi la [configurazione di Hopper e Ghidra](../installation.md#hopper), la [guida IDA](../ida-provider.md) e il [supporto sperimentale Windows Ghidra](../windows-ghidra-p0.md). Ghidra supporta anche l'[analisi DOS a 16 bit](../ghidra-dos.md). Per binari di grandi dimensioni, aumenta il timeout di avvio con `REA_GHIDRA_STARTUP_TIMEOUT_MS`. Per la selezione del provider, vedi la [guida CLI](../cli.md#choose-a-provider). Controlla la [disponibilità delle release](../installation.md#released-package-and-main) per le funzionalità aggiunte dall'ultima release npm.
+I formati nativi e il supporto host variano in base al provider. Vedi la [configurazione di Hopper e Ghidra](../installation.md#hopper), la [guida IDA](../ida-provider.md), [Kuna](../kuna-provider.md) e il [supporto sperimentale Windows Ghidra](../windows-ghidra-p0.md). Ghidra supporta anche l'[analisi DOS a 16 bit](../ghidra-dos.md). Per binari di grandi dimensioni, aumenta il timeout di avvio con `REA_GHIDRA_STARTUP_TIMEOUT_MS`. Per la selezione del provider, vedi la [guida CLI](../cli.md#choose-a-provider). Controlla la [disponibilità delle release](../installation.md#released-package-and-main) per le funzionalità aggiunte dall'ultima release npm.
 
 ## Showcase
 
@@ -266,7 +276,7 @@ Segnala vulnerabilità tramite [SECURITY.md](../../SECURITY.md).
 
 ## Cronologia delle stelle
 
-🎉 **170.000 stelle su GitHub — grazie!**
+🎉 **250.000 stelle su GitHub — grazie!**
 
 Grazie a tutti coloro che usano REA, segnalano bug, propongono funzionalità, testano le build e contribuiscono con correzioni.
 

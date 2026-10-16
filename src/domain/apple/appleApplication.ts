@@ -28,10 +28,8 @@ import {
   bridgeCandidateCoverageSchema,
   projectCartesianCandidates,
 } from "../bridgeCandidateProjection.js";
-import {
-  compareProjectionStrings,
-  projectionDigest,
-} from "../mobileApplicationGraphProjection.js";
+import { projectionDigest } from "../mobileApplicationGraphProjection.js";
+import { compareUnicodeCodePoints as compare } from "../unicodeCodePointOrder.js";
 
 const evidenceIdSchema = prefixedDigestSchema("ev");
 const pathSchema = z.string().min(1);
@@ -94,7 +92,7 @@ export const appleApplicationProjectionResultSchema = z.strictObject({
     // Count completeness is separate from the declared coverage status.
     inventory_complete: z.boolean(),
   }),
-  limitations: z.array(z.string().min(1)),
+  limitations: z.array(z.string()),
 });
 
 export type AppleApplicationProjectionInput = z.infer<
@@ -169,18 +167,24 @@ export const projectAppleApplication = (
   );
   const uninventoriedImage =
     rootFormat === "dmg" && inventory.occurrences.length === 1;
-  const inventoryComplete = hasCompleteInventoryCoverage(inventory);
+  const inventoryComplete = hasCompleteInventoryCoverage(
+    inventory,
+    "container-entries",
+  );
   const complete = inventoryComplete && !uninventoriedImage;
-  const limitations = projectionLimitations({
-    complete: inventoryComplete,
-    uninventoriedImage,
-    roots,
-    bundles,
-    sidecars: entries.some(({ path }) => isSidecar(path)),
-    symlinks: entries.some(({ kind }) => kind === "symlink"),
-    unattributed,
-    bridgeCandidateCoverage: bridgeProjection.coverage,
-  });
+  const limitations = [
+    ...inventory.limitations,
+    ...projectionLimitations({
+      complete: inventoryComplete,
+      uninventoriedImage,
+      roots,
+      bundles,
+      sidecars: entries.some(({ path }) => isSidecar(path)),
+      symlinks: entries.some(({ kind }) => kind === "symlink"),
+      unattributed,
+      bridgeCandidateCoverage: bridgeProjection.coverage,
+    }),
+  ];
   const withoutId = {
     root_sha256: inventory.manifest.root_sha256,
     root_format: rootFormat,
@@ -245,6 +249,9 @@ const appleRootFormat = (format: string): RootFormat => {
   return root;
 };
 
+const isNativeLibrary = (path: string): boolean =>
+  /\.(?:dylib|so)$/iu.test(path);
+
 const classifyComponents = (
   entries: readonly AppleInventoryEntry[],
   all: readonly Component[],
@@ -267,11 +274,13 @@ const classifyComponents = (
     bundle_metadata: all.filter(({ path }) =>
       anatomyNameIs(lastSegment(path), "Info.plist"),
     ),
+    // An unrooted IPA library is listed only under native_libraries.
     executables: all.filter(
-      ({ path, format }) => withinApp(path) && isMachOFormat(format),
+      ({ path, format }) =>
+        isMachOFormat(format) && (withinApp(path) || !isNativeLibrary(path)),
     ),
     frameworks: all.filter(({ path }) => /\.framework\//u.test(path)),
-    native_libraries: all.filter(({ path }) => /\.(?:dylib|so)$/iu.test(path)),
+    native_libraries: all.filter(({ path }) => isNativeLibrary(path)),
     javascript: all.filter(({ format }) => format === "javascript-bundle"),
     signing: all.filter(
       ({ path }) =>
@@ -444,6 +453,5 @@ const projectionLimitations = (facts: {
   "A bridge basis is inferred from the native path and is repeated for every managed component.",
 ];
 
-const compare = compareProjectionStrings;
 const digest = (value: unknown): string =>
   projectionDigest(value, "Apple application projection");

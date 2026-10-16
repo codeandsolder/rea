@@ -102,6 +102,8 @@ const installationHost: GhidraInstallationHost = {
   readText: () => "application.version=12.1.4\napplication.java.min=21\n",
   executable: () => true,
   probeJava: () => ({
+    osArch: "amd64",
+    osName: "Linux",
     version: "21.0.11",
     major: 21,
     home: "/fixture/jdk-21",
@@ -246,9 +248,8 @@ const disconnect = async (
     child.on("message", received);
     child.send("disconnect");
   });
-  await expect
-    .poll(async () => (await client.ping({ timeoutMs: 200 })).ok)
-    .toBe(false);
+  const disconnectedPing = await client.ping({ timeoutMs: 200 });
+  expect(disconnectedPing.ok).toBe(false);
   expect(child.exitCode).toBeNull();
   expect(child.signalCode).toBeNull();
 };

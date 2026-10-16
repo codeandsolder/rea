@@ -69,6 +69,13 @@ The observed mitmproxy 12.2.3 `SaveHar` profile can emit `postData.text: null`
 for a missing request body. REA preserves that reported null, omitting the
 optional field only from its validation copy for this exact producer profile;
 it does not invent an empty string or body bytes.
+The observed Playwright 1.58.2 profile can report a bracketed IPv6
+`serverIPAddress`, forwarded from Chromium's `remoteIPAddress` through
+[Playwright's HAR tracer](https://github.com/microsoft/playwright/blob/v1.58.2/packages/playwright-core/src/server/har/harTracer.ts).
+REA preserves the original spelling in reported Evidence and removes brackets
+only from its validation copy, only for this declared producer and a valid IPv6
+literal. Invalid addresses, bracketed IPv4, ports and zone identifiers remain
+validation failures. Producer declarations do not authenticate origin.
 
 Native mitmproxy decoding requires a caller-supplied **mitmdump 12.2.3 on
 Linux**. Set its absolute executable path:
@@ -110,7 +117,11 @@ gRPC message bytes. Missing members remain null, distinct from empty bodies.
 See Telerik's [SAZ format reference](https://www.telerik.com/fiddler/fiddler-everywhere/documentation/knowledge-base/fiddler-archives).
 
 The existing ZIP reader verifies read members; expanded archive contents are
-limited to 32 MiB in addition to the input/output budgets below. Encrypted
+limited to 32 MiB in addition to the input/output budgets below. Exceeding this
+expanded-byte budget returns `invalid_request` / `invalid_input` through both
+CLI and MCP, with an `out_of_range` issue at
+`capture_path` and `maximum_expanded_capture_bytes`. Selecting records does not
+bypass the complete-archive admission check or return partial Evidence. Encrypted
 archives and unrecognized raw session members are unsupported. SAZ requires an
 enforced decoder memory bound: Node's fixed heap, or the Windows Job Object
 commit limit. Bun on hosts without that Job Object limit returns capability
@@ -224,6 +235,22 @@ are 0 and 50. The view groups request lines by method, WHATWG URL origin and
 path template, sorted by origin, template and method. Query strings, fragments,
 credentials, headers and bodies are not copied into groups.
 
+Select `include_query_parameter_names: true` in the view to include distinct
+observed query names per group. The default and explicit `false` omit the
+`query_parameter_names` field. Selected groups include an array of
+`{name, record_ordinals}` entries, sorted by Unicode code point; each name's
+ordinals follow the parent's selected record order and occur once per record.
+For `/products?category=books&page=1` and
+`/products?category=games&sort=price`, names are `category`, `page` and `sort`.
+Query values and fragments are not copied into this inventory.
+
+Names use WHATWG `URLSearchParams` form-query decoding: literal `+` becomes
+space, `%2B` becomes `+`, percent escapes decode as UTF-8, and empty names are
+retained. Empty query pairs are ignored. Original URLs stay in parent Evidence;
+name decoding does not normalize the recorded paths used for grouping.
+The inventory describes observed names, without inferring required parameters,
+value types or a complete API schema. Sensitive-parent refusals still apply.
+
 | Rule       | Exact segment format                                 | Placeholder  |
 | ---------- | ---------------------------------------------------- | ------------ |
 | `numeric`  | ASCII digits only                                    | `{numeric}`  |
@@ -269,13 +296,16 @@ and validation scratch by walking the parent without cloning it. Inline requests
 borrow the Evidence value through CLI/MCP envelope validation; the application
 admits the entire portable envelope before authenticated parsing or hashing.
 The envelope clone, hash scratch and capture clone stay charged during grouping.
-Temporary URL/path/MIME work and retained state must
+Temporary URL/path/MIME/query work and retained state must
 fit together within a 96 MiB projection representation budget. A whole group or
 merge is admitted before allocating its retained sets, map entries or array
 values. Fixed group storage, distinct text, exclusions and limitations count as
 well as matched segments. Per-record reservations are released after each
 record; repeated values do not accumulate another retained charge. Only the
 requested page is materialized as output groups.
+Opt-in query projection reserves parser tuples and the per-record name set
+before decoding, then admits distinct retained names and source ordinals before
+changing a group. Repeated names within a request retain that ordinal once.
 
 The representation budget uses conservative storage and worst-case JSON-escaping
 allowances; it is not an enforced V8 heap or process-memory limit. It is separate

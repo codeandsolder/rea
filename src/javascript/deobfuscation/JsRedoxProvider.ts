@@ -37,6 +37,7 @@ import { PrivateRuntimeRoot } from "../../process/PrivateRuntimeRoot.js";
 import type { ProviderProcessSupervisor } from "../../process/ProviderProcess.js";
 import {
   executeJsRedox,
+  remainingJsRedoxTimeoutMs,
   type JsRedoxEngine,
   type JsRedoxRunRequest,
   type JsRedoxRunResult,
@@ -73,13 +74,13 @@ export class JsRedoxProvider implements JavaScriptDeobfuscationPort {
     readonly launcher?: JsRedoxLauncher,
     readonly createRuntime: () => Promise<
       Pick<PrivateRuntimeRoot, "path" | "close">
-    > = () =>
-      PrivateRuntimeRoot.create({
+    > = () => {
+      const parent = runtimeParent(environment);
+      return PrivateRuntimeRoot.create({
         prefix: "rea-js-redox-",
-        ...(runtimeParent(environment) === undefined
-          ? {}
-          : { parent: runtimeParent(environment) }),
-      }),
+        ...(parent === undefined ? {} : { parent }),
+      });
+    },
   ) {}
 
   deobfuscate(
@@ -403,7 +404,11 @@ export class JsRedoxProvider implements JavaScriptDeobfuscationPort {
     engine: JsRedoxEngine,
     request: JsRedoxRunRequest,
   ): Promise<JsRedoxRunResult> {
-    const limiter = await this.#bindLimiter(engine, request.cwd, request.signal);
+    const limiter = await this.#bindLimiter(
+      engine,
+      request.cwd,
+      request.signal,
+    );
     const limits = await readLinuxResourceLimits(
       {
         address_space_bytes: JS_REDOX_LIMITS.addressSpaceBytes,
@@ -427,7 +432,7 @@ export class JsRedoxProvider implements JavaScriptDeobfuscationPort {
         env: { TMPDIR: request.cwd, RAYON_NUM_THREADS: "1", NO_COLOR: "1" },
       },
       {
-        timeoutMs: request.timeoutMs,
+        timeoutMs: remainingJsRedoxTimeoutMs(request.deadlineAt),
         diagnosticBytes: JS_REDOX_LIMITS.diagnosticBytes,
       },
       {

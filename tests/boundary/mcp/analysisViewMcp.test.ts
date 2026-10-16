@@ -37,11 +37,13 @@ import {
   analysisViewCaptureFixture,
   analysisViewCaptureEvidence,
   analysisViewObjectDenseCapture,
+  analysisViewNativeEvidence,
 } from "../../fixtures/analysisView.js";
 import { createTestBinarySession } from "../../fixtures/binarySession.js";
 import { BINARY_LAYOUT_TEST_PROVIDER } from "../../fixtures/binaryDiagnostics/layout.js";
 import { wasmArtifactFixture } from "../../fixtures/wasm/artifact.js";
 import { evmInterfaceFixture } from "../../fixtures/evm/interface.js";
+import type { RelationshipCoverage } from "../../../src/domain/relationshipCoverage.js";
 
 const connect = async (
   binaryLayout?: BinaryLayoutService,
@@ -69,6 +71,183 @@ const connect = async (
   await client.connect(clientTransport);
   return { client, session };
 };
+
+it("preserves native relationship coverage through inline and retained MCP views", async () => {
+  const { client, session } = await connect();
+  const { ajv, outputSchema } = await advertisedMcpToolSchemas(
+    client,
+    "inspect_analysis_view",
+  );
+  const coverages: (RelationshipCoverage | undefined)[] = [
+    {
+      status: "partial",
+      limited_directions: ["callees"],
+      limitations: ["Callees: fixture read limit"],
+      diagnostics: ["Fixture relationship diagnostic"],
+    },
+    { status: "partial", limitations: ["Historical read limit"] },
+    {
+      status: "unknown",
+      limited_directions: ["callees"],
+      reason: "Callees not measured",
+      diagnostics: ["Unknown coverage diagnostic"],
+    },
+    {
+      status: "complete",
+      diagnostics: ["Only direct references are observed"],
+    },
+    { status: "complete" },
+    undefined,
+  ];
+  for (const coverage of coverages) {
+    const parent = analysisViewNativeEvidence(coverage);
+    const parentBefore = JSON.stringify(parent);
+    const recorded = session.recordEvidence(parent);
+    if (!recorded.ok) throw recorded.error;
+    const outputs = [];
+    for (const source of [
+      { kind: "inline", evidence: parent },
+      { kind: "retained-evidence", evidence_id: parent.evidence_id },
+    ]) {
+      const response = await client.callTool({
+        name: "inspect_analysis_view",
+        arguments: {
+          source,
+          view: { kind: "native", facet: "callees", offset: 0, limit: 1 },
+        },
+      });
+      expect(response.isError).not.toBe(true);
+      expect(
+        ajv.validate(outputSchema, response.structuredContent),
+        JSON.stringify(ajv.errors),
+      ).toBe(true);
+      const evidence = parseEvidence(response.structuredContent);
+      expect(evidence.relationship_coverage).toEqual(
+        parent.relationship_coverage,
+      );
+      expect(evidence.normalized_result).toMatchObject({
+        item: [],
+        coverage: { total: 0, exhausted: true },
+        limitations: expect.arrayContaining(["Fixture dossier caveat"]),
+      });
+      expect(session.evidenceById(evidence.evidence_id)).toEqual(evidence);
+      outputs.push(evidence);
+    }
+    expect(outputs[0]).toEqual(outputs[1]);
+    expect(JSON.stringify(parent)).toBe(parentBefore);
+  }
+});
+
+it("advertises typed module references and preserves portable/retained Evidence parity", async () => {
+  const { client, session } = await connect();
+  const parent = analysisViewJavaScriptEvidence(
+    analysisViewJavaScriptAnalysisWithSource(),
+  );
+  const recorded = session.recordEvidence(parent);
+  if (!recorded.ok) throw recorded.error;
+  const { ajv, inputSchema, outputSchema } = await advertisedMcpToolSchemas(
+    client,
+    "inspect_analysis_view",
+  );
+  const view = {
+    kind: "javascript",
+    collection: "modules",
+    projection: "references",
+    where: { path: "renderer.js" },
+    limit: 1,
+  };
+  const outputs = [];
+  for (const source of [
+    { kind: "inline", evidence: parent },
+    { kind: "retained-evidence", evidence_id: parent.evidence_id },
+  ]) {
+    expect(ajv.validate(inputSchema, { source, view })).toBe(true);
+    expect(
+      ajv.validate(inputSchema, {
+        source,
+        view: { ...view, where: { glob: "*" } },
+      }),
+    ).toBe(false);
+    const response = await client.callTool({
+      name: "inspect_analysis_view",
+      arguments: { source, view },
+    });
+    expect(response.isError).not.toBe(true);
+    expect(
+      ajv.validate(outputSchema, response.structuredContent),
+      JSON.stringify(ajv.errors),
+    ).toBe(true);
+    const evidence = parseEvidence(response.structuredContent);
+    expect(evidence).toMatchObject({
+      evidence_links: [parent.evidence_id],
+      normalized_result: {
+        kind: "javascript",
+        rows: [
+          {
+            path: "renderer.js",
+            identity: expect.any(Object),
+            basis: expect.any(Array),
+          },
+        ],
+        coverage: { exhausted: true },
+      },
+    });
+    expect(session.evidenceById(evidence.evidence_id)).toEqual(evidence);
+    outputs.push(evidence.normalized_result);
+  }
+  expect(outputs[0]).toEqual(outputs[1]);
+});
+
+it("projects opted-in query names identically from retained and portable MCP Evidence", async () => {
+  const { client, session } = await connect();
+  const capture = analysisViewCaptureFixture();
+  capture.records = capture.records.slice(0, 2);
+  capture.total_records = 2;
+  capture.records.forEach((record, index) => {
+    record.reported = {
+      request: {
+        method: "GET",
+        url:
+          index === 0
+            ? "https://api.test/products?a+b=one&a%2Bb=two&=three&a+b=four"
+            : "https://api.test/products?a+b=five&snow=six#ignored",
+      },
+    };
+  });
+  const parent = analysisViewCaptureEvidence(capture);
+  const retained = session.recordEvidence(parent);
+  if (!retained.ok) throw retained.error;
+  const outputs = [];
+  for (const source of [
+    { kind: "inline", evidence: parent },
+    { kind: "retained-evidence", evidence_id: parent.evidence_id },
+  ]) {
+    const response = await client.callTool({
+      name: "inspect_analysis_view",
+      arguments: {
+        source,
+        view: { kind: "api-surface", include_query_parameter_names: true },
+      },
+    });
+    expect(response.isError).not.toBe(true);
+    const evidence = parseEvidence(response.structuredContent);
+    expect(evidence.normalized_result).toMatchObject({
+      parent_evidence_id: parent.evidence_id,
+      groups: [
+        {
+          query_parameter_names: [
+            { name: "", record_ordinals: [0] },
+            { name: "a b", record_ordinals: [0, 1] },
+            { name: "a+b", record_ordinals: [0] },
+            { name: "snow", record_ordinals: [1] },
+          ],
+        },
+      ],
+    });
+    outputs.push(evidence.normalized_result);
+  }
+  expect(outputs[0]).toEqual(outputs[1]);
+});
 
 it("discovers an oversized native dossier by exact metadata and reads its retained view", async () => {
   const { client, session } = await connect();
@@ -276,6 +455,39 @@ it("advertises exact schemas and projects one layout section from retained Evide
   expect(session.evidenceById(parsed.evidence_id)).toEqual(
     parseEvidence(parsed),
   );
+});
+
+it("points omitted inline messages to the caller's parent without promising session recovery", async () => {
+  const { client, session } = await connect();
+  const messages = Array.from(
+    { length: 65 },
+    (_, index) => `Limitation ${String(index).padStart(2, "0")}`,
+  ).concat("z".repeat(300_000));
+  const parent = analysisViewLayoutEvidence({
+    ...analysisViewLayoutFixture(),
+    limitations: messages,
+  });
+  expect(session.evidenceById(parent.evidence_id)).toBeUndefined();
+  const response = await client.callTool({
+    name: "inspect_analysis_view",
+    arguments: {
+      source: { kind: "inline", evidence: parent },
+      view: { kind: "summary" },
+    },
+  });
+  expect(response.isError).not.toBe(true);
+  const view = toolContract("inspect_analysis_view").outputSchema.parse(
+    response.structuredContent,
+  );
+  const projected = z
+    .object({ limitations: z.array(z.string()) })
+    .parse(view.normalized_result);
+  expect(projected.limitations).toEqual([
+    ...messages.slice(0, 65),
+    `1 additional limitations omitted from this view; consult source parent Evidence ${parent.evidence_id} for the complete list (the caller-supplied record, or its retaining session).`,
+  ]);
+  expect(session.evidenceById(parent.evidence_id)).toBeUndefined();
+  expect(session.evidenceById(view.evidence_id)).toEqual(parseEvidence(view));
 });
 
 it("reports a tampered inline Evidence ID at its full MCP source path", async () => {

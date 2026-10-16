@@ -54,7 +54,7 @@ export interface JsRedoxRunRequest {
   readonly arguments: readonly string[];
   readonly cwd: string;
   readonly signal?: AbortSignal;
-  readonly timeoutMs: number;
+  readonly deadlineAt: number;
 }
 
 export interface JsRedoxRunResult {
@@ -89,7 +89,7 @@ export const executeJsRedox = async (input: {
       arguments: arguments_,
       cwd: input.runtimePath,
       ...(input.signal === undefined ? {} : { signal: input.signal }),
-      timeoutMs: remainingTimeoutMs(deadlineAt),
+      deadlineAt,
     });
 
   const versionObservation = await runWithinDeadline(versionEnginePath, [
@@ -264,7 +264,7 @@ const snapshotEngine = async (
   return enginePath;
 };
 
-const remainingTimeoutMs = (deadlineAt: number): number => {
+export const remainingJsRedoxTimeoutMs = (deadlineAt: number): number => {
   const remaining = deadlineAt - performance.now();
   if (remaining <= 0)
     throw new AnalysisTimeoutError(OPERATION, JS_REDOX_LIMITS.timeoutMs);

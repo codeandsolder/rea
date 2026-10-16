@@ -1,6 +1,7 @@
 <div align="center">
 
 [English](../../README.md) · [简体中文](README_zh.md) · [繁體中文](README_zh-TW.md) · [日本語](README_ja.md) · [한국어](README_ko.md) · [Türkçe](README_tr.md) · [Русский](README_ru.md) · [Tiếng Việt](README_vi.md) · [ไทย](README_th.md) · **Deutsch** · [Español](README_es.md) · [Français](README_fr.md) · [Українська](README_uk.md) · [Polski](README_pl.md) · [Português (Brasil)](README_pt-BR.md) · [العربية](README_ar.md) · [فارسی](README_fa.md) · [Bahasa Indonesia](README_id.md) · [Italiano](README_it.md)
+· [Ελληνικά](README_el.md)
 
 # REA: Alles reverse-engineeren
 
@@ -19,9 +20,17 @@
 
 **[Website](https://rea.tools/de/) · [Anleitungen](https://rea.tools/de/guides/) · [Fallstudien](https://rea.tools/de/showcase/)**
 
-[Schnellstart](#schnellstart) · [So funktioniert REA](#so-funktioniert-rea) · [Was du analysieren kannst](#was-du-analysieren-kannst) · [Fallstudien](#fallstudien) · [Häufige Fragen](#häufige-fragen) · [Dokumentation](#dokumentation)
+[Schnellstart](#schnellstart) · [So funktioniert REA](#so-funktioniert-rea) · [Was du analysieren kannst](#was-du-analysieren-kannst) · [Fallstudien](#fallstudien) · [Häufige Fragen](#häufige-fragen) · [GNU-objdump- und Rizin-Tools](../reverse-engineering-tools.md) · [Dokumentation](#dokumentation)
 
 <code>npx rea-agents setup</code>
+
+</div>
+
+> [!IMPORTANT]
+> Offizielle Quellen für REA: [morluto/rea](https://github.com/morluto/rea), [rea.tools](https://rea.tools/), [rea-agents](https://www.npmjs.com/package/rea-agents) (npm).
+> Folge den Installations- und Release-Links aus diesen offiziellen Quellen. Ein ähnlicher Repository-Name oder eine kopierte README belegt nicht, dass ein Download offiziell ist.
+
+<div align="center">
 
 <br />
 
@@ -132,12 +141,13 @@ REA benötigt Node.js 22.x (>=22.19), 24.x (>=24.11) oder 26+ sowie npm. Zusätz
 
 | Ziel                                | Was REA zurückgibt                                                                                              | Voraussetzungen und Anleitung                                                                                                               |
 | ----------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| Native Binärdateien                 | Pseudocode, Assemblercode, Zeichenketten, Symbole, Aufrufe und Verweise                                         | Hopper, Ghidra oder IDA; [native Analyse](https://rea.tools/de/guides/native/)                                                              |
+| Native Binärdateien                 | Pseudocode, Assemblercode, Zeichenketten, Symbole, Aufrufe und Verweise                                         | Hopper, Ghidra oder IDA; [native Analyse](../native-investigation.md)                                                                       |
 | Offline-ELF-Struktur                | Sektionen, Segmente, ursprüngliche Symbole/Relokationen und mögliche Schutzmaßnahmen aus statischer Analyse     | Vom Aufrufer bereitgestelltes pwntools unter Linux x64; [Binärdiagnostik](../binary-diagnostics.md)                                         |
 | EVM-Bytecode                        | Dispatch-Selektoren, Byte-Offsets, abgeleitete Argumente und Veränderbarkeit des Zustands                       | Lokale Eingabe mit Rohbytes oder Hexdarstellung unter Linux x64; [Offline-EVM-Leitfaden](../evm-bytecode.md)                                |
+| Rust binaries                       | Embedded cargo-auditable dependency list                                                                        | [Rust binaries](../rust-binaries.md)                                                                                                        |
 | Aufgezeichnete Linux-Abstürze       | Unverarbeitete Note-Einträge, Register/Signale aller aufgezeichneten Threads und optionale Zuordnungskandidaten | Vom Aufrufer bereitgestelltes pwntools unter Linux x64; optional GDB/pwndbg; [aufgezeichnete Abstürze](../recorded-crashes.md)              |
-| JavaScript / Electron               | Module, Imports, Source Maps, Routen, IPC und Beziehungen zu nativen Add-ons                                    | Node.js und npm; [Anwendungsanalyse](https://rea.tools/de/guides/javascript/); [js-redox](../javascript-deobfuscation.md)                   |
-| Websites                            | Seitenstruktur, Skripte, Netzwerkbeobachtungen und angeforderte Screenshots                                     | Ein Browser aus der Chrome-Familie; [Browseranalyse](https://rea.tools/de/guides/browser/)                                                  |
+| JavaScript / Electron               | Module, Imports, Source Maps, Routen, IPC und Beziehungen zu nativen Add-ons                                    | Node.js und npm; [Anwendungsanalyse](../javascript-application-workflows.md); [js-redox](../javascript-deobfuscation.md)                    |
+| Websites                            | Seitenstruktur, Skripte, Netzwerkbeobachtungen und angeforderte Screenshots                                     | Ein Browser aus der Chrome-Familie; [Browseranalyse](../browser-observation.md)                                                             |
 | Gespeicherte Netzwerkaufzeichnungen | Anfragen, Antworten, zugängliche Nutzdaten und Quellpositionen                                                  | HAR; mitmdump unter Linux für Aufzeichnungen im nativen mitmproxy-Format; [Leitfaden zu Netzwerkaufzeichnungen](../web-network-captures.md) |
 | Paketerfassungen                    | Endpunkte, DNS, TLS SNI, Protokollverteilung und HTTP-Anfragen                                                  | Vom Aufrufer bereitgestellte tshark- und capinfos-Binaries; [pcap-Leitfaden](../pcap-analysis.md)                                           |
 | .NET-Assemblies                     | Metadaten, CIL-Anweisungen, deklarierte native Abhängigkeiten und Build-Vergleiche                              | Statische Untersuchung; [Leitfaden für verwalteten Code](../managed-code-analysis.md)                                                       |
@@ -156,7 +166,7 @@ Statische JavaScript- und .NET-Untersuchungen lesen die bereitgestellten Dateien
 
 <a id="choosing-a-deep-analysis-provider"></a>
 
-Native Formate und unterstützte Hostsysteme unterscheiden sich je nach Provider. Siehe [Hopper- und Ghidra-Einrichtung](../installation.md#hopper), den [IDA-Leitfaden](../ida-provider.md) und die [experimentelle Ghidra-Unterstützung unter Windows](../windows-ghidra-p0.md). Ghidra unterstützt auch [16-Bit-DOS-Analyse](../ghidra-dos.md). Die Provider-Auswahl beschreibt der [CLI-Leitfaden](../cli.md#choose-a-provider). Prüfe die [Verfügbarkeit in Releases](../installation.md#released-package-and-main) für Funktionen, die seit der neuesten npm-Version hinzugekommen sind.
+Native Formate und unterstützte Hostsysteme unterscheiden sich je nach Provider. Siehe [Hopper- und Ghidra-Einrichtung](../installation.md#hopper), den [IDA-Leitfaden](../ida-provider.md), [Kuna](../kuna-provider.md) und die [experimentelle Ghidra-Unterstützung unter Windows](../windows-ghidra-p0.md). Ghidra unterstützt auch [16-Bit-DOS-Analyse](../ghidra-dos.md). Die Provider-Auswahl beschreibt der [CLI-Leitfaden](../cli.md#choose-a-provider). Prüfe die [Verfügbarkeit in Releases](../installation.md#released-package-and-main) für Funktionen, die seit der neuesten npm-Version hinzugekommen sind.
 
 ## Fallstudien
 
@@ -262,7 +272,7 @@ Melde Sicherheitslücken gemäß [SECURITY.md](../../SECURITY.md).
 
 ## Sternverlauf
 
-🎉 **170.000 GitHub-Sterne – vielen Dank!**
+🎉 **250.000 GitHub-Sterne – vielen Dank!**
 
 Danke an alle, die REA nutzen, Fehler melden, Funktionswünsche äußern, Builds testen und Fehlerbehebungen beitragen.
 

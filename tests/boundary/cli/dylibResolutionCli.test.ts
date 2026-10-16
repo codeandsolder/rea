@@ -106,6 +106,57 @@ const withBrokenHelper = async (app: string): Promise<void> => {
   await writeFiles(app, { "Contents/Helpers/broken": broken });
 };
 
+cliTest(
+  "does not turn U+FEFF-prefixed strings into dyld path tokens",
+  async ({ cli }) => {
+    const app = await fixtureApp();
+    await writeFiles(app, {
+      "Contents/MacOS/App": machoImage({
+        commands: [
+          buildVersionCommand(1),
+          rpathCommand("@executable_path/../Frameworks"),
+          dylibCommand(LC.LOAD_DYLIB, "@rpath/libcore.dylib"),
+          dylibCommand(LC.LOAD_DYLIB, "\uFEFF@rpath/libcore.dylib"),
+        ],
+      }),
+      "Contents/Helpers/tool": machoImage({
+        commands: [
+          buildVersionCommand(1),
+          rpathCommand("\uFEFF@loader_path/../Frameworks"),
+          dylibCommand(LC.LOAD_DYLIB, "@rpath/libcore.dylib"),
+        ],
+      }),
+    });
+    const output = await cli.run({
+      arguments: ["trace-dylib-resolution", app, "--json"],
+      environment: ENVIRONMENT,
+    });
+    expect(output.exitCode, output.stderr).toBe(0);
+    const trace = dylibResolutionResultSchema.parse(
+      parseEvidence(output.json).normalized_result,
+    );
+    const ordinary = trace.edges.find(
+      ({ loader, install_name }) =>
+        loader === "Contents/MacOS/App" &&
+        install_name === "@rpath/libcore.dylib",
+    );
+    expect(ordinary?.resolution).toMatchObject({
+      status: "resolved",
+      image: "Contents/Frameworks/libcore.dylib",
+    });
+    const marked = trace.edges.find(
+      ({ install_name }) => install_name === "\uFEFF@rpath/libcore.dylib",
+    );
+    expect(marked).toBeDefined();
+    expect(marked?.resolution.image).toBeNull();
+    const helper = trace.edges.find(
+      ({ loader }) => loader === "Contents/Helpers/tool",
+    );
+    expect(helper).toBeDefined();
+    expect(helper?.resolution.image).toBeNull();
+  },
+);
+
 describe("trace-dylib-resolution CLI", () => {
   cliTest("traces every executable root of an app bundle", async ({ cli }) => {
     const app = await fixtureApp();
@@ -634,3 +685,79 @@ cliTest(
     }
   },
 );
+
+/** An app bundle whose roots sit among more files than one batch of magic reads. */
+const crowdedApp = async (): Promise<string> => {
+  const app = await fixtureApp();
+  await withBrokenHelper(app);
+  const resources: Record<string, string | Uint8Array> = {};
+  for (let index = 0; index < 40; index += 1)
+    resources[`Contents/Resources/r${index % 4}/file${index}.dat`] = "x".repeat(
+      index % 5,
+    );
+  for (const index of [0, 1, 2])
+    resources[`Contents/Resources/r${index}/tool${index}`] = machoImage({
+      commands: [buildVersionCommand(1)],
+    });
+  resources["Contents/Resources/r3/libextra.dylib"] = machoImage({
+    fileType: FILE_TYPE.dylib,
+  });
+  await writeFiles(app, resources);
+  return app;
+};
+
+describe("trace-dylib-resolution root enumeration", () => {
+  cliTest(
+    "classifies every Mach-O among more files than one batch of magic reads",
+    async ({ cli }) => {
+      const app = await crowdedApp();
+      const result = await cli.run({
+        arguments: ["trace-dylib-resolution", app, "--json"],
+        environment: ENVIRONMENT,
+      });
+      expect(result.exitCode, JSON.stringify(result.json)).toBe(0);
+      const trace = dylibResolutionResultSchema.parse(
+        (result.json as { normalized_result: unknown }).normalized_result,
+      );
+      expect(trace.roots.map(({ image }) => image)).toEqual([
+        "Contents/Helpers/tool",
+        "Contents/MacOS/App",
+        "Contents/Resources/r0/tool0",
+        "Contents/Resources/r1/tool1",
+        "Contents/Resources/r2/tool2",
+      ]);
+      expect(trace.coverage).toMatchObject({
+        status: "partial",
+        unparsed_images: ["Contents/Helpers/broken"],
+      });
+    },
+  );
+
+  // This permission fixture requires POSIX mode bits and a non-root caller.
+  cliTest.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "reports an unreadable bundle file found while enumerating roots",
+    async ({ cli }) => {
+      const app = await crowdedApp();
+      const secret = join(app, "Contents/Resources/r2/secret.dat");
+      await writeFile(secret, "x");
+      await chmod(secret, 0o000);
+      try {
+        const result = await cli.run({
+          arguments: ["trace-dylib-resolution", app, "--json"],
+          environment: ENVIRONMENT,
+        });
+        expect(result.exitCode).toBe(1);
+        expect(result.json).toMatchObject({
+          details: {
+            reason: "unavailable",
+            detail: expect.stringContaining(
+              "Permission denied (EACCES) reading Contents/Resources/r2/secret.dat",
+            ),
+          },
+        });
+      } finally {
+        await chmod(secret, 0o644);
+      }
+    },
+  );
+});

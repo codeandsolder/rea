@@ -42,6 +42,7 @@ jobs:
       tier: ${{ steps.plan.outputs.tier }}
       qualification_run_id: ${{ steps.qualification.outputs.run_id }}
       code: ${{ steps.plan.outputs.code }}
+      reverse_tools: ${{ steps.plan.outputs.reverse_tools }}
       sqlite: ${{ steps.plan.outputs.sqlite }}
       runtime: ${{ steps.plan.outputs.runtime }}
       package: ${{ steps.plan.outputs.package }}
@@ -59,6 +60,7 @@ jobs:
       web_runtime: ${{ steps.plan.outputs.web_runtime }}
       web_source_map: ${{ steps.plan.outputs.web_source_map }}
       nativeaot: ${{ steps.plan.outputs.nativeaot }}
+      ghidra_bridge: ${{ steps.plan.outputs.ghidra_bridge }}
       website: ${{ steps.plan.outputs.website }}
       matrix: ${{ steps.plan.outputs.matrix }}
       test_selection: ${{ steps.plan.outputs.test_selection }}
@@ -122,11 +124,33 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
-          cache: npm
+      - name: Cache npm package downloads
+        id: npm-cache
+        uses: ./.github/actions/npm-cache
       - run: npm ci
+      - name: Restore static task cache
+        if: needs.changes.outputs.code == 'true'
+        id: static-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .turbo/cache/
+          key: rea-static-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.nvmrc', '.npmrc', 'package-lock.json') }}-${{ github.sha }}
+          # Turbo validates each task's inputs after restoring this snapshot.
+          restore-keys: rea-static-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.nvmrc', '.npmrc', 'package-lock.json') }}-
       - name: Validate workflow syntax and expressions
         if: needs.changes.outputs.workflows == 'true'
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -shellcheck= -pyflakes=
+      # Code tiers run this source-only policy test in their existing shards.
+      # Workflow-only changes need the guard, without preparing runtime artifacts.
+      - name: Check action pins for workflow-only changes
+        if: needs.changes.outputs.workflows == 'true' && needs.changes.outputs.code != 'true'
+        run: node scripts/run-exact-tests.mjs run tests/boundary/filesystem/workflowActionPinning.test.ts
+      - name: Record static task source and execution identity
+        continue-on-error: true
+        if: needs.changes.outputs.code == 'true'
+        env:
+          CI_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: npm run ci:static-context
       - if: needs.changes.outputs.code == 'true'
         run: npm run check:ci
       - if: needs.changes.outputs.code == 'true'
@@ -136,6 +160,15 @@ jobs:
         run: npm run test:python
       - if: needs.changes.outputs.code != 'true'
         run: npm run format:check
+      - name: Save validated static task cache
+        if: >-
+          success() && needs.changes.outputs.code == 'true' &&
+          steps.npm-cache.outputs.can-save == 'true' &&
+          steps.static-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .turbo/cache/
+          key: ${{ steps.static-cache.outputs.cache-primary-key }}
       - name: Upload complete static diagnostics
         if: always() && needs.changes.outputs.code == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -146,6 +179,34 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  test-source:
+    name: Source tests
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.tier == 'fast'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: Cache npm package downloads
+        id: npm-cache
+        uses: ./.github/actions/npm-cache
+      - run: npm ci
+      - name: Run source tests without waiting for build
+        run: npm run test:fast -- --reporter=default --reporter=blob
+        env:
+          VITEST_BLOB_LABEL: source
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() }}
+        with:
+          name: vitest-report-source
+          path: .vitest/blob/*
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
   test-shard:
     name: Test shard (${{ matrix.shard }})
     needs: [changes, build]
@@ -153,15 +214,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
-      fail-fast: false
+      # Failed PRs release the remaining matrix slots; qualification retains
+      # every shard's diagnostics and coverage. Passing PRs run the full suite.
+      fail-fast: ${{ github.event_name == 'pull_request' && needs.changes.outputs.tier == 'fast' }}
       matrix:
-        shard: [1/6, 2/6, 3/6, 4/6, 5/6, 6/6]
+        # Fast feedback spends the same six test jobs on one source group and
+        # five built groups; full qualification retains six complete shards.
+        shard: ${{ fromJSON(needs.changes.outputs.tier == 'fast' && '["1/5","2/5","3/5","4/5","5/5"]' || '["1/6","2/6","3/6","4/6","5/6","6/6"]') }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
-          cache: npm
+      - name: Cache npm package downloads
+        id: npm-cache
+        uses: ./.github/actions/npm-cache
       - run: npm ci
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -172,19 +239,53 @@ jobs:
         run: npm run test:ci:shard:run -- --shard=${{ matrix.shard }}
         env:
           REA_CI_TEST_HISTORY: .cache/ci-test-history/test-results.json
-      - name: Run complete portable suite for fast feedback
+      - name: Run built-dependent tests for fast feedback
         if: needs.changes.outputs.tier == 'fast'
-        run: npm run test:run -- --reporter=default --reporter=blob --shard=${{ matrix.shard }}
+        run: npm run test:built -- --reporter=default --reporter=blob --shard=${{ matrix.shard }}
         env:
+          VITEST_BLOB_LABEL: built
           REA_CI_TEST_HISTORY: .cache/ci-test-history/test-results.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ !cancelled() }}
         with:
-          name: vitest-report-${{ strategy.job-index }}
+          name: vitest-report-built-${{ strategy.job-index }}
           path: .vitest/blob/*
           include-hidden-files: true
           if-no-files-found: error
           overwrite: true
+          retention-days: 7
+
+  reverse-tools-quality:
+    name: Reverse tools quality
+    needs: [changes, static]
+    if: needs.changes.outputs.reverse_tools == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: Cache npm package downloads
+        id: npm-cache
+        uses: ./.github/actions/npm-cache
+      - run: npm ci
+      - name: Run reverse tools tests with coverage
+        run: npm run test:coverage:reverse-tools
+      - name: Preflight both reverse tools mutation configurations
+        run: |
+          node scripts/prepare-reverse-tools-mutation.mjs
+          npx --no-install stryker run stryker.config.mjs --dryRunOnly
+          npx --no-install stryker run stryker.semantics.config.mjs --dryRunOnly
+      - name: Retain available reverse tools diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: reverse-tools-quality-${{ needs.changes.outputs.tier }}-${{ github.run_attempt }}
+          path: |
+            coverage/reverse-tools/
+            reports/mutation/
+          if-no-files-found: warn
           retention-days: 7
 
   build:
@@ -212,7 +313,9 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
-          cache: npm
+      - name: Cache npm package downloads
+        id: npm-cache
+        uses: ./.github/actions/npm-cache
       - run: npm ci
       - name: Reuse portable build outputs across runs
         uses: ./.github/actions/portable-build-cache
@@ -271,7 +374,7 @@ jobs:
 
   test:
     name: Portable tests
-    needs: [changes, test-shard]
+    needs: [changes, test-source, test-shard]
     if: ${{ !cancelled() && needs.changes.outputs.tier != 'reused' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -286,13 +389,18 @@ jobs:
         if: needs.changes.outputs.code == 'true' && success()
         with:
           node-version-file: .nvmrc
-          cache: npm
+      - name: Cache npm package downloads
+        if: needs.changes.outputs.code == 'true' && success()
+        id: npm-cache
+        uses: ./.github/actions/npm-cache
       - if: needs.changes.outputs.code == 'true' && success()
         run: npm ci
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         if: >-
           !cancelled() && needs.changes.outputs.code == 'true' &&
-          (needs.test-shard.result == 'success' || needs.test-shard.result == 'failure')
+          (needs.test-shard.result == 'success' || needs.test-shard.result == 'failure' ||
+           (needs.changes.outputs.tier == 'fast' &&
+            (needs.test-source.result == 'success' || needs.test-source.result == 'failure')))
         with:
           path: .vitest/blob
           pattern: vitest-report-*
@@ -320,7 +428,8 @@ jobs:
         if: >-
           !cancelled() && needs.changes.outputs.code == 'true' &&
           needs.changes.outputs.tier == 'fast' &&
-          (needs.test-shard.result == 'success' || needs.test-shard.result == 'failure')
+          (needs.test-shard.result == 'success' || needs.test-shard.result == 'failure' ||
+           needs.test-source.result == 'success' || needs.test-source.result == 'failure')
         run: >-
           npm exec -- vitest --merge-reports
           --reporter=default
@@ -330,9 +439,11 @@ jobs:
           --outputFile.junit=test-results.xml
           --outputFile.json=test-results.json
       - name: Summarize slowest test files
-        if: needs.changes.outputs.code == 'true' && !cancelled() && hashFiles('test-timings.json') != ''
+        if: needs.changes.outputs.code == 'true' && !cancelled()
         env:
           SHARD_RESULT: ${{ needs.test-shard.result }}
+          SOURCE_REQUIRED: ${{ needs.changes.outputs.tier == 'fast' }}
+          SOURCE_RESULT: ${{ needs.test-source.result }}
           MERGE_RESULT: ${{ needs.changes.outputs.tier == 'full' && steps.merge.outcome || steps.merge-fast.outcome }}
           CI_VERIFY_TEST_INVENTORY: "true"
           CI_TEST_SELECTION: ${{ needs.changes.outputs.test_selection }}
@@ -365,7 +476,13 @@ jobs:
         env:
           CODE_REQUIRED: ${{ needs.changes.outputs.code }}
           SHARD_RESULT: ${{ needs.test-shard.result }}
-        run: test "${CODE_REQUIRED}" != "true" || test "${SHARD_RESULT}" = "success"
+          SOURCE_REQUIRED: ${{ needs.changes.outputs.tier == 'fast' }}
+          SOURCE_RESULT: ${{ needs.test-source.result }}
+        run: |
+          if [ "${CODE_REQUIRED}" = "true" ]; then
+            test "${SHARD_RESULT}" = "success" || exit 1
+            test "${SOURCE_REQUIRED}" != "true" || test "${SOURCE_RESULT}" = "success"
+          fi
 
   conformance-fixtures:
     name: Source-built conformance fixtures
@@ -450,7 +567,9 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
-          cache: npm
+      - name: Cache npm package downloads
+        id: npm-cache
+        uses: ./.github/actions/npm-cache
       - name: Verify native runtime identity
         env:
           EXPECTED_CI_PLATFORM: ${{ matrix.platform }}
@@ -472,11 +591,6 @@ jobs:
       - run: npm run verify:windows-native:artifact
       - name: Verify NativeAOT diagnostic applicability on this host
         run: npm run test:focused -- tests/evaluation/package/nativeAotDiagnostics.test.ts
-      - name: Resolve npm cache before verifier HOME isolation
-        id: npm-cache
-        run: |
-          cache_path="$(npm config get cache)"
-          echo "path=${cache_path}" >> "${GITHUB_OUTPUT}"
       - run: npm run verify:package
         env:
           npm_config_cache: ${{ steps.npm-cache.outputs.path }}
@@ -506,7 +620,9 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
-          cache: npm
+      - name: Cache npm package downloads
+        id: npm-cache
+        uses: ./.github/actions/npm-cache
       - run: npm ci
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -537,6 +653,7 @@ jobs:
           tests/boundary/cli/nativeSignatureCli.test.ts
           tests/boundary/mcp/nativeSignatureTargetBindingMcp.test.ts
           src/process/capture/FilesystemSnapshot.test.ts
+          tests/process-global/filesystemSnapshotFallbackCancellation.test.ts
           tests/boundary/process/darwinProcessRunTokenReader.test.ts
           tests/boundary/process/directAnalysisSignals.test.ts
           tests/boundary/process/processCaptureLifecycle.test.ts
@@ -554,7 +671,9 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
-          cache: npm
+      - name: Cache npm package downloads
+        id: npm-cache
+        uses: ./.github/actions/npm-cache
       - run: npm ci
       - name: Run the public CLI/MCP reconstruction journey
         env:
@@ -583,18 +702,20 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
-          cache: npm
+      - name: Cache npm package downloads
+        id: npm-cache
+        uses: ./.github/actions/npm-cache
       - run: npm ci
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: rea-build-cache
           path: .turbo/cache/
-      - run: npm run build:cached
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: windows-native-controls
           path: native/windows/build/
       - run: npm run verify:windows-native:artifact
+      - run: npm run build:cached
       - name: Record named Windows host capabilities
         run: node scripts/windows-capabilities.mjs | Out-File -Encoding utf8NoBOM windows-capabilities.json
       - name: Validate Windows host capability report
@@ -613,6 +734,8 @@ jobs:
       - name: Run curated Windows capability tests
         run: >-
           npx vitest run --coverage.enabled=false
+          src/process/capture/FilesystemSnapshot.test.ts
+          tests/process-global/filesystemSnapshotFallbackCancellation.test.ts
           tests/boundary/filesystem/binaryTarget.test.ts
           tests/boundary/filesystem/safeOutputTree.test.ts
           tests/boundary/providers/native/artifactProvider.archiveSafety.test.ts
@@ -624,6 +747,8 @@ jobs:
           tests/boundary/filesystem/javascriptApplicationWorkflows.test.ts
           tests/boundary/filesystem/webScriptManifestPaths.test.ts
           tests/boundary/process/ProcessEvidence.host.test.ts
+          tests/boundary/process/packageNpmInvocation.test.ts
+          tests/boundary/process/windowsOutputCapture.test.ts
           tests/acceptance/webModuleCli.test.ts
           tests/acceptance/webSourceLocationCli.test.ts
           tests/boundary/cli/referenceSourceImportStatus.test.ts
@@ -645,6 +770,8 @@ jobs:
           src/process/ProcessOwnership.validation.test.ts
           src/application/Update.test.ts
           tests/process-global/updateMaintenance.test.ts
+          tests/process-global/runnerCancellation.test.ts
+          tests/process-global/windowsOwnedCommand.test.ts
           tests/conformance/providers/ghidra/realGhidraWindowsWorkflow.test.ts
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -703,7 +830,9 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
-          cache: npm
+      - name: Cache npm package downloads
+        id: npm-cache
+        uses: ./.github/actions/npm-cache
       - run: npm ci
       - run: npm run docs:check
       - name: Generation leaves authored files unchanged
@@ -778,6 +907,11 @@ jobs:
     if: needs.changes.outputs.nativeaot == 'true'
     uses: ./.github/workflows/nativeaot-fixtures.yml
 
+  ghidra_bridge:
+    needs: [changes, static]
+    if: needs.changes.outputs.ghidra_bridge == 'true'
+    uses: ./.github/workflows/ghidra-bridge-sources.yml
+
   website:
     needs: [changes, static]
     if: needs.changes.outputs.website == 'true'
@@ -792,7 +926,9 @@ jobs:
         changes,
         static,
         build,
+        reverse-tools-quality,
         test-shard,
+        test-source,
         sqlite-runtime,
         test,
         conformance-fixtures,
@@ -811,6 +947,7 @@ jobs:
         web_runtime,
         web_source_map,
         nativeaot,
+        ghidra_bridge,
         website,
       ]
     runs-on: ubuntu-24.04

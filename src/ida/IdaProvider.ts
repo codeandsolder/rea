@@ -68,13 +68,17 @@ export class IdaProvider implements AnalysisProviderCandidate {
       if (!privacy.available)
         return {
           status: "unavailable",
-          code: "unsupported_host",
+          code: privacy.code,
           reason: privacy.reason,
           diagnostics: {
             configured: true,
             mode: "headless",
             live_connection_probed: false,
             private_workspace_available: false,
+            windows_native_failure: {
+              stage: privacy.failureStage,
+              remediation: privacy.remediation,
+            },
           },
         };
     }
@@ -113,7 +117,11 @@ export class IdaProvider implements AnalysisProviderCandidate {
         status: "unsupported",
         code: "architecture_unsupported",
         reason: `REA's IDA adapter has no verified ${
-          target.architecture === "mips" ? "MIPS" : "RISC-V"
+          target.architecture === "mips"
+            ? "MIPS"
+            : target.architecture === "riscv"
+              ? "RISC-V"
+              : "PowerPC"
         } lane. Select a supported Ghidra profile instead.`,
         diagnostics,
       };

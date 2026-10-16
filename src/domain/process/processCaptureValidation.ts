@@ -1,4 +1,7 @@
-import { digestProcessCommitment } from "./processScenario.js";
+import {
+  digestProcessCommitment,
+  processScenarioOutputBudgetProjectionSchema,
+} from "./processScenario.js";
 import { hasCaptureTruncation } from "./processCaptureCoverage.js";
 
 import type {
@@ -312,8 +315,31 @@ const validateCoverage = (
       retention.observed_bytes >= retention.retained_bytes &&
       (retention.observed_frames > count ||
         retention.observed_bytes === retention.retained_bytes) &&
-      retention.retained_bytes <=
-        retention.budget_bytes, `truncation_details.${name}`, "retained observations and budget accounting do not agree");
+      retention.retained_bytes <= retention.budget_bytes &&
+      (retention.unknown_size_frames ?? 0) <=
+        retention.observed_frames -
+          retention.retained_frames, `truncation_details.${name}`, "retained observations and budget accounting do not agree");
+  }
+  const normalized = details.normalized_terminal;
+  if (normalized !== undefined) {
+    const committedOutputBudget =
+      processScenarioOutputBudgetProjectionSchema.safeParse(
+        capture.manifest.scenario["limits"],
+      );
+    require(committedOutputBudget.success, "manifest.scenario.limits.output_bytes", "committed process scenario must include an explicit valid output_bytes budget");
+    const retainedBytes = capture.frames.reduce(
+      (total, frame) => total + Buffer.byteLength(frame.data),
+      0,
+    );
+    if (committedOutputBudget.success)
+      require(normalized.budget_bytes ===
+        committedOutputBudget.data.output_bytes &&
+        normalized.retained_bytes === retainedBytes &&
+        normalized.retained_bytes <= normalized.budget_bytes &&
+        normalized.omitted_frames <=
+          details.raw_terminal.observed_frames -
+            details.raw_terminal
+              .retained_frames, "truncation_details.normalized_terminal", "normalized terminal retention must agree with the committed budget and retained frames");
   }
   for (const [name, coverage, files, checkpoint] of [
     [
@@ -334,6 +360,9 @@ const validateCoverage = (
         .filter((file) => file.type === "file" && file.sha256 === null)
         .map((file) => [file.path, file]),
     );
+    const directories = new Set(
+      files.filter((file) => file.type === "directory").map(({ path }) => path),
+    );
     require(coverage.hash_omissions.length === unhashedFiles.size &&
       new Set(coverage.hash_omissions.map(({ path }) => path)).size ===
         unhashedFiles.size &&
@@ -345,6 +374,14 @@ const validateCoverage = (
             ? omission.system_code !== null
             : omission.system_code === null),
       ), `truncation_details.${name}.hash_omissions`, "every retained regular file without a digest must have one matching omission reason");
+    require(new Set(coverage.enumeration_omissions.map(({ path }) => path))
+      .size === coverage.enumeration_omissions.length &&
+      (coverage.enumeration_omissions.length === 0 ||
+        coverage.enumeration_reasons.includes("directory_unavailable")) &&
+      coverage.enumeration_omissions.every(
+        (omission) =>
+          directories.has(omission.path) && omission.system_code !== null,
+      ), `truncation_details.${name}.enumeration_omissions`, "every directory enumeration omission must identify one retained directory and its system error");
     require(coverage.hashed_bytes ===
       files
         .filter((file) => file.type === "file" && file.sha256 !== null)
@@ -356,6 +393,7 @@ const validateCoverage = (
       coverage.enumeration_reasons.length > 0 &&
       checkpoint?.truncated ===
         (coverage.enumeration_truncated ||
+          coverage.enumeration_omissions.length > 0 ||
           coverage.hash_omissions.length >
             0), `truncation_details.${name}`, "filesystem checkpoint truncation must match enumeration and digest coverage");
   }

@@ -129,13 +129,46 @@ and Claude Code reports that autocompact is thrashing. To avoid this:
 The sizes above come from REA's own `tools/list`. A live Claude Code session
 against DeepSeek's API is unverified.
 
+For a client whose stdio reader rejects the complete catalog frame, add
+`"REA_MCP_OUTPUT_SCHEMA_PROFILE": "off"` to REA's `env` object and restart the
+client. This omits only advertised output schemas; REA still validates complete
+structured results against its canonical contracts. See [MCP output schema
+profiles](mcp-contracts.md#output-schemas).
+
 ## Kimi Code
 
 Setup registers `rea` in `~/.kimi-code/mcp.json`, or
 `$KIMI_CODE_HOME/mcp.json` when set, while preserving unrelated settings and
 creating a `.rea.backup` before updating an existing file. Kimi Code infers
-stdio from the `command` entry, so setup does not add a `type` field. The
-registration includes `startupTimeoutMs = 30000` and `toolTimeoutMs = 120000`.
+stdio from the `command` entry, so setup does not add a `type` field. New
+registrations include `startupTimeoutMs = 30000` and a `toolTimeoutMs` derived
+from REA's known provider allowance plus 120 seconds of operation
+headroom. The default is 450000 ms, covering the default 330-second Ghidra
+startup; an explicit Ghidra startup timeout of 2700000 ms produces a 2820000 ms
+tool timeout. The startup allowance follows an explicitly selected Ghidra or
+Hopper provider, and otherwise uses the larger known Ghidra/Hopper deadline.
+An explicit `REA_JEB_MCP_TIMEOUT_MS` request budget also contributes to that
+maximum. For `ida` or `auto` selection, a valid IDA registration's parsed
+`timeoutMs` also contributes to that maximum; its default is 300000 ms.
+Setup forwards these explicitly selected REA deadlines and the input schema
+profile into the registration; unrelated process values are omitted.
+This headroom is a practical default, not a guarantee for every analysis
+duration. Setup preserves positive timeout values already in the `rea` entry.
+You can edit `startupTimeoutMs` and `toolTimeoutMs` there; doctor keeps positive
+caller-selected values aligned and reports a non-blocking advisory when a tool
+timeout is shorter than the known provider allowance.
+Setup selects the compact input-schema advertisement for new or refreshed Kimi
+registrations unless their stored configuration or setup environment explicitly
+selects `REA_MCP_INPUT_SCHEMA_PROFILE=full` or `compact`. This keeps REA's
+canonical tool validation unchanged while avoiding a Moonshot Kimi Code 2.2.0
+failure observed with the full catalog: its request was rejected because a
+single tool schema exceeded the provider's size limit. The limit is
+provider-specific and not an MCP protocol limit. `rea doctor --client kimi`
+reports an older registration with no explicit profile as stale. To restore the
+compact profile, run `rea setup --client kimi` or add
+`REA_MCP_INPUT_SCHEMA_PROFILE=compact` to the registration's `env`, then restart
+Kimi Code. An explicit `full` profile remains respected and can still exceed
+Moonshot's limit.
 Kimi Code also discovers personal skills in `~/.agents/skills` and project-local
 `.agents/skills`, so no separate skill root is required; setup still installs
 and verifies the matching skill files through the normal shared-skill flow.
@@ -201,8 +234,20 @@ standalone CLI check.
 
 ## Codex and Devin
 
-Codex treats an unset or empty `CODEX_HOME` as `~/.codex`. Devin honors
-`XDG_CONFIG_HOME` for its `devin/mcp_config.json` on non-Windows systems.
+Codex treats an unset or empty `CODEX_HOME` as `~/.codex`. Its MCP server
+registration supports `startup_timeout_sec` for connection initialization and
+`tool_timeout_sec` for each tool call. New REA registrations use a 30-second
+startup timeout and a tool timeout derived from the known provider
+allowance plus 120 seconds of operation headroom. This yields 450 seconds for
+the default Ghidra allowance; an explicit Ghidra startup timeout of 2700
+seconds yields 2820 seconds. Setup preserves positive caller-selected timeout
+values in the REA entry, and doctor reports a non-blocking advisory when a tool
+timeout is shorter than the known provider allowance. An explicitly selected
+JEB request budget also contributes to the allowance. A configured IDA
+registration's parsed `timeoutMs` contributes for `ida` or `auto` selection.
+These values are client-side deadlines, so increase them in `~/.codex/config.toml` if a
+workload needs more time. Devin honors `XDG_CONFIG_HOME` for its
+`devin/mcp_config.json` on non-Windows systems.
 
 ## OMP
 
@@ -265,6 +310,21 @@ The user-level MCP paths follow the editor's VS Code layout. Trae's official
 documentation describes the raw JSON editor without specifying those paths;
 loading this registration in Trae remains unverified.
 
+## WorkBuddy
+
+For [WorkBuddy](https://www.workbuddy.cn/docs/workbuddy/From-Beginner-to-Expert-Guide/Function-Description/MCP-Guide), setup writes `mcpServers.rea` into the
+global `~/.workbuddy/mcp.json` (a standard `mcpServers` JSON file at the user
+home root on every platform). Entries carry `command`, `args`, and `env`;
+stdio is the default transport. WorkBuddy discovers personal skills from
+`~/.workbuddy/skills` (`%userprofile%\.workbuddy\skills` on Windows), so
+setup installs its skill copy there.
+
+The global MCP path is a plain JSON file; setup preserves every other server
+and top-level key when it upserts `rea`. WorkBuddy also reads a project-level
+`<project>/.workbuddy/mcp.json`, which setup does not touch: it registers the
+user-level file only. Loading this registration and real REA tool calls
+through WorkBuddy are verified.
+
 ## ZCode
 
 For [ZCode](https://zcode.z.ai/en/docs/mcp-services), setup registers `rea` in the nested `mcp.servers` table of the
@@ -279,7 +339,11 @@ the first native server into an empty table, it copies the fallback's
 `mcpServers` entries into the native table so they keep loading, and leaves
 the fallback file untouched. Existing REA environment overrides are preserved
 when refreshing its command. A malformed or unreadable fallback file fails setup instead of
-being silently suppressed; repair or remove it and rerun. ZCode disables a
+being silently suppressed; repair or remove it and rerun. Uninstall removes an
+REA-owned `rea` entry from both the native table and the fallback, backing up
+each changed file, so an emptied native table cannot load a leftover fallback
+registration; other fallback servers, settings and a foreign `rea` entry are
+kept. ZCode disables a
 server with `enable: false` on its entry; doctor reports such a registration
 as stale, and rerunning setup removes the flag to repair it. Native configuration
 uses strict JSON; setup refuses comments, trailing commas and a BOM rather than

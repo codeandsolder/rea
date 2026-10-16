@@ -54,7 +54,7 @@ export const resolveHopperAnalysisProfile = async (
   let preparedImage: HopperMachOImage | undefined;
   if (
     target.kind === "executable" &&
-    machoContainer === "fat64" &&
+    (machoContainer === "fat64" || machoContainer === "fat32") &&
     options.loaderArgsOverride.length === 0
   ) {
     const resolved = await resolveHopperMachOImage(target, options.signal);
@@ -82,6 +82,7 @@ export const resolveHopperAnalysisProfile = async (
     profile: createAnalysisProfile(provider, {
       target_kind: target.kind,
       target_format: target.format,
+      function_dossier_coverage: "observed-facets-and-call-relationships-v1",
       architecture: target.architecture ?? null,
       available_architectures: [
         ...(target.availableArchitectures ?? []),
@@ -110,6 +111,7 @@ const HOPPER_DECLINED_ARCHITECTURE_LABELS: Record<
 > = {
   mips: "MIPS",
   riscv: "RISC-V",
+  powerpc: "PowerPC",
 };
 
 /** Derive Hopper's complete non-interactive CLI loader selection. */

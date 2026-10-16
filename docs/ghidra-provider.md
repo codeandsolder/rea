@@ -7,6 +7,8 @@ Executable bytes remain unchanged.
 
 Use [installation](installation.md#ghidra) for supported hosts, prerequisites,
 configuration, startup deadlines, resource controls, and cleanup recovery.
+[Linux Ghidra launches](installation.md#linux-owned-process-prerequisite) also
+require a procps-compatible `ps` on REA's `PATH` for process ownership checks.
 [Windows P0](windows-ghidra-p0.md) has its own admission and lifecycle boundary;
 [NativeAOT observations](ghidra-nativeaot.md) include a built-in read-only PE
 snapshot parser and a separate optional annotation extension. Check the
@@ -137,6 +139,12 @@ overview merely because its source artifact is unchanged.
 
 ## Admitted function-analysis semantics
 
+Concurrent callers share one startup while retaining independent cancellation.
+Only the final departing caller abandons startup and waits for its cleanup.
+New attempts wait for that cleanup; failed cleanup retains its original error
+and owned directories until a successful close. Closing the provider reports a
+provider-state failure to live callers rather than cancelling their signals.
+
 | Concern                 | Ghidra contract                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Decompiler lifetime     | One persistent `DecompInterface` is opened for the imported Program and disposed during bridge shutdown. Native decompilation has no fixed per-function deadline. External functions or functions without bodies return `null`; cancellation and native failure remain distinct.                                                                                                                                                                                                                                                                                                                                           |
@@ -151,15 +159,18 @@ overview merely because its source artifact is unchanged.
 
 Function extents and instruction completeness refer to Ghidra's analyzed body.
 An inferred no-return call can terminate that body before subsequent bytes.
-Pseudocode, assembly, procedure info, instruction windows, callee and caller
-reads, and dossiers report observed terminal call sites in Evidence limitations,
+Pseudocode, assembly, procedure info, instruction windows, incoming and outgoing
+references, callee and caller reads, and dossiers report observed terminal call sites in Evidence limitations,
 including resolved callee names, addresses, and FunctionManager flags when
-available. Instruction windows
-and dossiers also retain these warnings in their result limitations. An
-unresolved callee or unestablished terminal-flow basis remains explicit. These
-observations qualify the analysis; they do not prove that a no-return flag is
-incorrect or recover excluded code. Analysis profiles version this observation
-contract so older snapshots cannot replay unqualified results.
+available. On x86-32, the same views also report the exact Borland/Delphi-style
+FS exception-registration pattern when its handler address falls outside the
+function body. This is a static registration observation; it does not establish
+handler execution or change the body. Instruction windows and dossiers also
+retain these warnings in their result limitations. An unresolved callee or
+unestablished terminal-flow basis remains explicit. These observations qualify
+the analysis; they do not prove that a no-return flag is incorrect or recover
+excluded code. Analysis profiles version this observation contract so older
+snapshots cannot replay unqualified results.
 
 On non-Windows hosts, the ephemeral import repair clears no-return flags on the
 known returning external ABI names `malloc`, `__tls_get_addr`, `memcpy`, `memset`,
@@ -188,8 +199,12 @@ these tools before compilation. Keeping this matrix separate lets Linux
 host/provider acceptance run with only the host compiler.
 
 `npm run verify:ghidra:windows` checks source-owned native x86-64 PE applications;
-`-- --x86` selects x86 and `-- --dll` selects DLLs, and the flags can be combined.
-These lanes check all 25 read-only operations, target/snapshot/import SHA-256 linkage,
+`-- --x86`, `-- --arm`, or `-- --arm64` selects another target architecture;
+`-- --dll` selects DLLs. Choose one architecture and optionally combine it with
+`--dll`. These static fixtures contain source-owned encoded instructions; they
+are not compiler-produced programs. See the [Windows verification scope](windows-ghidra-p0.md#native-authority-and-target-identity)
+for real-provider coverage and exclusions.
+These lanes check all 26 read-only operations, target/snapshot/import SHA-256 linkage,
 and project, endpoint, process, and runtime cleanup. The independent native
 lane checks DACLs, handle admission, cancellation, and Job Object lifecycle.
 `npm run verify:ghidra:windows:package` packs and installs REA into an isolated

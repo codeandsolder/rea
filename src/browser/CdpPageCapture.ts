@@ -155,6 +155,12 @@ const captureAuthorizedPage = async (
   );
   if (!input.include_storage_keys)
     state.events.completeness.exclude("storage_keys", "not_approved", null);
+  else if (storageCapture.keysExclusion !== undefined)
+    state.events.completeness.exclude(
+      "storage_keys",
+      storageCapture.keysExclusion,
+      null,
+    );
   await report(context.progress, 3, "Normalizing browser evidence");
   const completedFrameResult = await authorizedMainFrame({
     connection: context.connection,
@@ -408,6 +414,7 @@ const accessibilityForFrames = async (
   const capture = captureAccessibility(results, {
     includeText: context.input.include_accessibility_text,
     ...(results.length === 0 && unavailable ? { unavailable: true } : {}),
+    completeness: events.completeness,
   });
   if (!context.input.include_accessibility_text)
     events.completeness.exclude(
@@ -415,7 +422,8 @@ const accessibilityForFrames = async (
       "not_approved",
       capture.textCapture.excluded_fields,
     );
-  if (capture.treeIncomplete) events.completeness.truncate("accessibility");
+  if (capture.hasUnobservedChildren)
+    events.completeness.truncate("accessibility");
   return capture;
 };
 

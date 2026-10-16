@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 import { FakeSetupHost, options } from "./Setup.fixture.js";
 import { runSetup } from "./Setup.js";
 import { setupRegistrationCommand } from "./SetupHost.js";
+import { CURRENT_ENTRYPOINT_PATH } from "../process/CurrentEntrypointPath.js";
+import { discoverSetupState } from "./SetupPlan.js";
 import type { MsixPackageView } from "./MsixPackageStorage.js";
 import type { SetupClient } from "./SupportedClients.js";
 
@@ -191,6 +193,53 @@ describe("setup workflow", () => {
   });
 });
 
+describe("configured Linux Hopper selection", () => {
+  it("keeps an explicitly configured launcher even when demo checks fail", async () => {
+    const host = new FakeSetupHost("linux");
+    host.distribution = {
+      id: "ubuntu",
+      versionId: "24.04",
+      packageFamily: "deb",
+      hopperSetupSupported: true,
+    };
+    host.hopper = "/opt/hopper/bin/Hopper";
+    host.hopperLauncherConfigured = true;
+    host.linuxDemoRuntimeMissing = true;
+    const doctor = await host.doctor();
+    const initial = await host.initialSetupState();
+    const discovery = await discoverSetupState({
+      host,
+      providerConfigured: initial.providerConfigured,
+      forceHopperInstall: false,
+      proposeHopper: true,
+      hopperLauncherConfigured: true,
+      initialDoctor: doctor,
+    });
+    expect(discovery.installHopper).toBe(false);
+  });
+
+  it("still offers repair for an unconfigured REA managed install", async () => {
+    const host = new FakeSetupHost("linux");
+    host.distribution = {
+      id: "ubuntu",
+      versionId: "24.04",
+      packageFamily: "deb",
+      hopperSetupSupported: true,
+    };
+    host.hopper = "/opt/hopper/bin/Hopper";
+    host.unsupportedHopperVersion = true;
+    const initial = await host.initialSetupState();
+    const discovery = await discoverSetupState({
+      host,
+      providerConfigured: initial.providerConfigured,
+      forceHopperInstall: false,
+      proposeHopper: true,
+      initialDoctor: await host.doctor(),
+    });
+    expect(discovery.installHopper).toBe(true);
+  });
+});
+
 describe("setup workflow action selection", () => {
   it("executes only actions selected by the interactive adapter", async () => {
     const host = new FakeSetupHost();
@@ -287,13 +336,13 @@ describe("setup workflow action selection", () => {
 
     expect(result.status).toBe("ready");
     expect(host.configuredCommands).toEqual([
-      setupRegistrationCommand("win32", undefined),
+      setupRegistrationCommand("win32", undefined, CURRENT_ENTRYPOINT_PATH),
     ]);
-    expect(setupRegistrationCommand("win32", undefined)).toEqual([
-      process.execPath,
-      resolve(process.argv[1] ?? "rea"),
-      "mcp",
-    ]);
+    expect(
+      setupRegistrationCommand("win32", undefined, CURRENT_ENTRYPOINT_PATH),
+    ).toEqual([process.execPath, CURRENT_ENTRYPOINT_PATH, "mcp"]);
+    expect(setupRegistrationCommand("win32", undefined, undefined)).toEqual([]);
+    expect(setupRegistrationCommand("win32", "npx", undefined)).not.toEqual([]);
   });
 
   it.each([

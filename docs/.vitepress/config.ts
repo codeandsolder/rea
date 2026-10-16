@@ -29,6 +29,7 @@ export default defineConfig({
         items: [
           { text: "Native binaries", link: "/native-investigation" },
           { text: "Go build metadata", link: "/go-binaries" },
+          { text: "Rust dependencies", link: "/rust-binaries" },
           {
             text: "JavaScript and Electron",
             link: "/javascript-artifact-reconstruction",
@@ -43,6 +44,7 @@ export default defineConfig({
             link: "/web-network-captures",
           },
           { text: "Electron observation", link: "/electron-observation" },
+          { text: "Electron fuses", link: "/electron-fuses" },
           { text: "Process capture", link: "/process-capture" },
           { text: ".NET assemblies", link: "/managed-code-analysis" },
           { text: "Android applications", link: "/android-analysis" },
@@ -58,10 +60,12 @@ export default defineConfig({
         collapsed: true,
         items: [
           { text: "IDA", link: "/ida-provider" },
+          { text: "Kuna", link: "/kuna-provider" },
           { text: "Ghidra on Windows", link: "/windows-ghidra-p0" },
           { text: "Ghidra DOS analysis", link: "/ghidra-dos" },
           { text: "Ghidra raw binary", link: "/raw-binary" },
           { text: "Ghidra NativeAOT", link: "/ghidra-nativeaot" },
+          { text: "Ghidra PowerPC", link: "/ghidra-ppc" },
           { text: "Ghidra semantics", link: "/ghidra-provider" },
         ],
       },

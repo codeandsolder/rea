@@ -41,6 +41,9 @@ it
     }
     // A rejection must come from the fixture we are about to launch. An
     // existing Xvfb would otherwise mask a broken executable-identity check.
+    // The copied launcher has a unique file identity and has not run yet.
+    // The synthetic proc root isolates the positive identity check from
+    // unrelated restricted host processes while retaining display-name checks.
     await assertCleanLinuxHopperRuntime(
       alternateMode ? [launcher] : [],
       procRoot,
@@ -71,11 +74,12 @@ it
       const { stdout } = await parent;
       const { pid } = JSON.parse(stdout) as { pid: number };
       orphanPid = pid;
-      if (alternateMode) {
-        const processEntry = join(procRoot, String(pid));
-        await mkdir(processEntry);
-        await symlink(`/proc/${String(pid)}/exe`, join(processEntry, "exe"));
-      }
+      // The runtime check reads only the supplied proc root, so expose the
+      // fixture there in both modes.
+      const processEntry = join(procRoot, String(pid));
+      await mkdir(processEntry);
+      for (const name of ["cmdline", "comm", "exe"])
+        await symlink(`/proc/${String(pid)}/${name}`, join(processEntry, name));
       const { stdout: coordinates } = await execFileAsync("ps", [
         "-p",
         String(pid),

@@ -14,7 +14,7 @@ import {
   ghidraMipsProfileParameters,
   ghidraPinnedMipsLanguage,
 } from "./GhidraMipsProfile.js";
-import type { GhidraInstallationHost } from "./GhidraInstallation.js";
+import { ghidraProfileInstallationHost as host } from "./GhidraInstallation.fixture.js";
 import { GHIDRA_SESSION_CAPABILITIES } from "./GhidraSessionValues.js";
 import type { GhidraMipsSoftFloatReport } from "./GhidraMipsProfile.js";
 import {
@@ -22,20 +22,6 @@ import {
   ghidraProfileLanguageOverride,
 } from "./GhidraAnalysisProfile.js";
 
-// Fake installation inspection tests admission/profile contracts, not Ghidra.
-const host: GhidraInstallationHost = {
-  platform: "linux",
-  architecture: "x64",
-  readText: () => "application.version=12.1.4\napplication.java.min=21\n",
-  executable: () => true,
-  probeJava: () => ({
-    version: "21.0.11",
-    major: 21,
-    home: "/jdk-21",
-    bits: 64,
-    runtime: "jdk",
-  }),
-};
 const parsed = parseConfig({ GHIDRA_INSTALL_DIR: "/ghidra" });
 if (!parsed.ok) throw parsed.error;
 const config = parsed.value;
@@ -51,6 +37,7 @@ const target = (change: Partial<MipsElfMetadata> = {}): BinaryTarget => ({
     byteOrder: "little",
     type: 2,
     flags: 0x70001001,
+    gnuAttributes: null,
     abiFlags: {
       version: 0,
       isaLevel: 32,
@@ -109,6 +96,7 @@ describe("bounded Ghidra MIPS admission", () => {
         flags1: 0,
         flags2: 0,
       },
+      gnu_attributes: null,
     });
     expect(left.value.profile?.digest).not.toBe(right.value.profile?.digest);
     const windows = new GhidraProvider(
@@ -155,7 +143,13 @@ describe("bounded Ghidra MIPS admission", () => {
         reason: expect.stringContaining(reason),
       });
       const resolved = await ghidra.resolveAnalysisProfile(value);
-      expect(resolved.ok).toBe(false);
+      expect(resolved).toMatchObject({
+        ok: false,
+        error: {
+          _tag: "AnalysisUnsupportedTargetError",
+          reason: expect.stringContaining(reason),
+        },
+      });
     },
   );
 
@@ -180,7 +174,13 @@ describe("recordless legacy MIPS32 admission", () => {
       status: "unsupported",
     });
     const resolved = await ghidra.resolveAnalysisProfile(object);
-    expect(resolved.ok).toBe(false);
+    expect(resolved).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisUnsupportedTargetError",
+        reason: expect.stringContaining("ET_EXEC"),
+      },
+    });
   });
 
   it.each([
@@ -472,7 +472,7 @@ describe("MIPS16 shared-image profile", () => {
       );
     },
   );
-  it.each(["sharedLoad", "abiFlags"] as const)(
+  it.each(["sharedLoad", "abiFlags", "gnuAttributes"] as const)(
     "refuses an uninspected %s declaration",
     (declaration) => {
       const value = shared();
@@ -486,9 +486,11 @@ describe("MIPS16 shared-image profile", () => {
       ).toMatchObject({
         status: "unsupported",
         reason: expect.stringContaining(
-          declaration === "abiFlags"
-            ? "inspected ABI flags"
-            : "have not been inspected",
+          {
+            abiFlags: "inspected ABI flags",
+            gnuAttributes: "GNU MIPS ABI attribute inspection is unavailable",
+            sharedLoad: "have not been inspected",
+          }[declaration],
         ),
       });
     },

@@ -121,7 +121,11 @@ it("exports every canonical scope with read authority for admission and keeps te
     );
   expect(timings.on.workflow_run).toBeUndefined();
   expect(timings.on.schedule).toHaveLength(1);
-  expect(timings.permissions).toEqual({ contents: "read", actions: "read" });
+  expect(timings.permissions).toEqual({
+    contents: "read",
+    actions: "read",
+    "pull-requests": "read",
+  });
   const checkout = timings.jobs.report.steps.find((step) =>
     step.uses?.startsWith("actions/checkout@"),
   );
@@ -154,6 +158,7 @@ it("holds native and provider fan-out behind static validation while portable fe
     "static",
     "build",
     "test-shard",
+    "test-source",
     "test",
     "docs",
     "required",
@@ -369,7 +374,7 @@ it("keeps fast feedback separate from complete qualification and release proof",
   // release their concurrency slot without waiting for another runner.
   expect(ci.jobs.required?.if).toBe("${{ !cancelled() }}");
   const shards = ci.jobs["test-shard"]?.steps ?? [];
-  const fast = shards.find((step) => step.run?.includes("npm run test:run"));
+  const fast = shards.find((step) => step.run?.includes("npm run test:built"));
   const full = shards.find((step) => step.run?.includes("test:ci:shard:run"));
   expect(fast?.if).toBe("needs.changes.outputs.tier == 'fast'");
   expect(fast?.run).toContain("--reporter=blob");
@@ -398,6 +403,7 @@ it.each([
     for (const [scope, lane] of [
       ["sqlite", "sqlite-runtime"],
       ["workflows", "static"],
+      ["ghidra_bridge", "ghidra_bridge"],
     ] as const) {
       // GitHub exposes only direct dependencies in the required job's needs context.
       const needs: Record<
@@ -503,6 +509,47 @@ it("rejects incomplete or malformed classification even when available jobs succ
     ).rejects.toMatchObject({
       code: 1,
       stderr: expect.stringContaining("scope outputs: sqlite"),
+    });
+  }
+});
+
+it("fails fast only for ordinary PR matrices and rejects partial portable feedback", async () => {
+  const { jobs } = await workflow();
+  expect(jobs["test-shard"]?.strategy).toMatchObject({
+    "fail-fast":
+      "${{ github.event_name == 'pull_request' && needs.changes.outputs.tier == 'fast' }}",
+  });
+  expect(jobs["package-e2e"]?.strategy).toMatchObject({ "fail-fast": false });
+  const flags = await scopeFlags();
+  for (const result of ["failure", "cancelled", "skipped", "missing"]) {
+    // Even an incorrectly successful report merge cannot hide matrix failure.
+    const needs: Record<string, unknown> = {
+      changes: {
+        result: "success",
+        outputs: {
+          ...Object.fromEntries(flags.map((flag) => [flag, "false"])),
+          tier: "fast",
+          code: "true",
+        },
+      },
+      static: { result: "success" },
+      build: { result: "success" },
+      test: { result: "success" },
+      ...(result === "missing" ? {} : { "test-shard": { result } }),
+    };
+    await expect(
+      executeWorkflowFixture(
+        process.execPath,
+        [
+          fileURLToPath(
+            new URL("../../../scripts/ci/required.mjs", import.meta.url),
+          ),
+        ],
+        { env: { ...process.env, CI_JOBS: JSON.stringify(needs) } },
+      ),
+    ).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining("test-shard"),
     });
   }
 });

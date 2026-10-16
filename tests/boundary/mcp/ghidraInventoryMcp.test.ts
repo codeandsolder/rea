@@ -1,6 +1,6 @@
 import { parseMcpToolError } from "../../fixtures/mcpToolError.js";
 import { expect, it } from "vitest";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 import { nativeAotPeFixture } from "../../fixtures/nativeaotPe.js";
@@ -13,7 +13,6 @@ import {
   sessionEvidence,
 } from "./ghidraMcpHarness.js";
 import { spawn } from "node:child_process";
-import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { GhidraClient } from "../../../src/ghidra/GhidraClient.js";
@@ -316,7 +315,7 @@ it("retains missing PDB coverage in empty PE name-search Evidence and snapshot r
     const evidence = sessionEvidence(harness.session, reply.structuredContent);
     expect(evidence.normalized_result).toEqual([]);
     expect(evidence.analysis_profile?.parameters.pdb_observations).toBe(
-      "program-info-v1",
+      "program-info-v5",
     );
     const limitation = evidence.limitations.find((value) =>
       value.includes(pdb.file),

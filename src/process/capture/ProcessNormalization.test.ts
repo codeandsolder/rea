@@ -1,6 +1,8 @@
 import { expect, it } from "vitest";
 
 import {
+  createBoundedProcessTextNormalizer,
+  createProcessTextNormalizer,
   normalizeProcessSamples,
   normalizeProcessText,
 } from "./ProcessNormalization.js";
@@ -92,6 +94,214 @@ it("replaces caller-declared patterns literally, without expanding replacement p
       rootPid,
     ),
   ).toBe("listening on $&$&; $$; $1=alpha; tail $1");
+});
+
+it("bounds ordered normalization before replacement expansion and preserves later smaller chunks", () => {
+  const normalize = createBoundedProcessTextNormalizer(
+    scenario({
+      paths: false,
+      ports: false,
+      pids: false,
+      patterns: [{ pattern: "a", replacement: "x".repeat(500) }],
+    }),
+    "/temporary",
+    rootPid,
+  );
+
+  expect(normalize("a".repeat(100), 1_000)).toEqual({ state: "over_budget" });
+  expect(normalize("z", 1_000)).toEqual({
+    state: "normalized",
+    value: "z",
+    utf8Bytes: 1,
+  });
+});
+
+it("keeps ordered intermediate expansion explicit even when a later rule could shrink it", () => {
+  const normalize = createBoundedProcessTextNormalizer(
+    scenario({
+      paths: false,
+      ports: false,
+      pids: false,
+      patterns: [
+        { pattern: "a", replacement: "x".repeat(20) },
+        { pattern: "x", replacement: "y" },
+      ],
+    }),
+    "/temporary",
+    rootPid,
+  );
+
+  expect(normalize("a", 10)).toEqual({ state: "over_budget" });
+});
+
+it("counts UTF-8 bytes across replacement boundaries like the final JavaScript string", () => {
+  const splitPair = scenario({
+    paths: false,
+    ports: false,
+    pids: false,
+    patterns: [{ pattern: "\ude00", replacement: "\ude01" }],
+  });
+  const splitPairResult = createBoundedProcessTextNormalizer(
+    splitPair,
+    "/temporary",
+    rootPid,
+  )("😀", 4);
+  expect(splitPairResult).toEqual({
+    state: "normalized",
+    value: normalizeProcessText("😀", splitPair, "/temporary", rootPid),
+    utf8Bytes: 4,
+  });
+  expect(
+    splitPairResult.state === "normalized" && splitPairResult.utf8Bytes,
+  ).toBe(
+    Buffer.byteLength(
+      normalizeProcessText("😀", splitPair, "/temporary", rootPid),
+    ),
+  );
+
+  const joinedPair = scenario({
+    paths: false,
+    ports: false,
+    pids: false,
+    patterns: [{ pattern: "\ude00\ud83d", replacement: "" }],
+  });
+  const joinedInput = "😀😀";
+  const joinedExpected = normalizeProcessText(
+    joinedInput,
+    joinedPair,
+    "/temporary",
+    rootPid,
+  );
+  expect(joinedExpected).toBe("😀");
+  expect(
+    createBoundedProcessTextNormalizer(
+      joinedPair,
+      "/temporary",
+      rootPid,
+    )(joinedInput, Buffer.byteLength(joinedExpected)),
+  ).toEqual({
+    state: "normalized",
+    value: joinedExpected,
+    utf8Bytes: Buffer.byteLength(joinedExpected),
+  });
+
+  const emptyPattern = scenario({
+    paths: false,
+    ports: false,
+    pids: false,
+    patterns: [{ pattern: "", replacement: "\ude00" }],
+  });
+  const input = "\ud83d";
+  const expected = normalizeProcessText(
+    input,
+    emptyPattern,
+    "/temporary",
+    rootPid,
+  );
+  expect(
+    createBoundedProcessTextNormalizer(
+      emptyPattern,
+      "/temporary",
+      rootPid,
+    )(input, Buffer.byteLength(expected)),
+  ).toEqual({
+    state: "normalized",
+    value: expected,
+    utf8Bytes: Buffer.byteLength(expected),
+  });
+  expect(
+    createBoundedProcessTextNormalizer(
+      emptyPattern,
+      "/temporary",
+      rootPid,
+    )(input, Buffer.byteLength(expected) - 1),
+  ).toEqual({ state: "over_budget" });
+
+  const loneSurrogate = scenario({
+    paths: false,
+    ports: false,
+    pids: false,
+    patterns: [{ pattern: "x", replacement: "y" }],
+  });
+  const loneInput = "\ud83dx";
+  const loneExpected = normalizeProcessText(
+    loneInput,
+    loneSurrogate,
+    "/temporary",
+    rootPid,
+  );
+  expect(
+    createBoundedProcessTextNormalizer(
+      loneSurrogate,
+      "/temporary",
+      rootPid,
+    )(loneInput, Buffer.byteLength(loneExpected)),
+  ).toEqual({
+    state: "normalized",
+    value: loneExpected,
+    utf8Bytes: Buffer.byteLength(loneExpected),
+  });
+});
+
+it("lets a later pattern shrink text when an earlier pattern does not match", () => {
+  const declared = scenario({
+    paths: false,
+    ports: false,
+    pids: false,
+    patterns: [
+      { pattern: "z", replacement: "x" },
+      { pattern: "aa", replacement: "b" },
+    ],
+  });
+  const expected = normalizeProcessText("aa", declared, "/temporary", rootPid);
+  expect(expected).toBe("b");
+  expect(
+    createBoundedProcessTextNormalizer(
+      declared,
+      "/temporary",
+      rootPid,
+    )("aa", Buffer.byteLength(expected)),
+  ).toEqual({
+    state: "normalized",
+    value: expected,
+    utf8Bytes: Buffer.byteLength(expected),
+  });
+});
+
+it("reuses matchers while observing the terminal PID after launch", () => {
+  let pid = -1;
+  const normalize = createProcessTextNormalizer(
+    scenario({ ports: false, patterns: [] }),
+    "/temporary",
+    () => pid,
+  );
+  expect(normalize("root 41010 /workspace/item")).toBe(
+    "root 41010 <working-directory>/item",
+  );
+  pid = 41_010;
+  expect(normalize("root 41010 /workspace/item")).toBe(
+    "root <pid> <working-directory>/item",
+  );
+  pid = 42_020;
+  expect(normalize("root 41010 peer 42020")).toBe("root 41010 peer <pid>");
+});
+
+it("keeps equal-path priority and replacement aliases local to each capture", () => {
+  const declared = parseProcessScenario({
+    executable: "/selected/tool",
+    working_directory: "/selected",
+    filesystem_observation_paths: ["/selected", "<working-directory>"],
+    normalization: { paths: true, pids: false, ports: false, patterns: [] },
+  });
+  const normalize = createProcessTextNormalizer(declared, "/selected", -1);
+  const other = createProcessTextNormalizer(declared, "/other", -1);
+  const text = "/selected/item <working-directory>/source";
+  expect(normalize(text)).toBe(
+    "<temporary-root>/item <filesystem-root-1>/source",
+  );
+  expect(other(text)).toBe(
+    "<working-directory>/item <filesystem-root-1>/source",
+  );
 });
 
 it("preserves empty-pattern boundaries, including empty text", () => {

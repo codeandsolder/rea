@@ -2,11 +2,21 @@
 
 REA can attach to an Electron/Chromium CDP endpoint and inspect existing `file://` renderer pages without evaluating JavaScript or invoking Electron APIs. The request supplies the endpoint directly; REA accepts only literal-port loopback HTTP endpoints. Selecting an endpoint exposes every Electron target it serves, including local file paths and page metadata.
 
+Disconnecting the inspection's page session can clear caller-owned
+`navigator.platform` emulation inside Chromium. REA cannot restore another
+client's complete user-agent/client-hint configuration. Use a disposable target
+or let the owning client reapply its configuration; see the shared
+[CDP state limitation](browser-observation.md#provider-authorities).
+
 This passive runtime surface is distinct from the target-free static
 [`analyze_javascript_application`](javascript-artifact-reconstruction.md)
 workflow. Static analysis reads a local ASAR or extracted directory without
 executing application code. Passive observation inspects an existing Electron
 page. The results keep static inferences and runtime observations distinct.
+Packaged fuse state is a separate static read:
+[`inspect_electron_fuses`](electron-fuses.md) reports whether this binary will
+honor Inspector flags, `ELECTRON_RUN_AS_NODE`, embedded ASAR integrity, and
+`app.asar`-only loading.
 Use the separate
 [`reconcile_javascript_runtime`](javascript-runtime-reconciliation.md) workflow
 when both Evidence sets already exist.
@@ -97,8 +107,13 @@ scenario controls; their attempted and observed outcomes remain in the
 timeline. The active hook blocks and records external shell/navigation,
 permission, download, popup, updater, and OS-integration effects. The timeline
 is explicitly partial when attachment starts after application activity. The
-startup has a 60-second deadline. Actions wait until completion or request
-cancellation; a click whose target never appears remains pending until cancelled.
+startup, including the initial state snapshot, has a 60-second deadline.
+Actions wait until completion or request cancellation; a click whose target
+never appears, or a `wait` without `window_index` in an app that opens no
+window, remains pending until cancelled. After cancellation, the final state
+read has 5 seconds before REA keeps the initial snapshot instead; the
+cancellation keeps the caller's reason and records that expiry in its
+diagnostics.
 CLI SIGINT/SIGTERM requests cancellation and awaits owned-process cleanup.
 Window IDs, URLs, and cached titles come from one main-process Electron snapshot,
 so a crashed renderer does not require a successful renderer-side title query.
@@ -111,6 +126,12 @@ path. A configured path or working IPC handler does not prove preload execution.
 If cleanup cannot be verified, the error retains collected observations in
 `details.partial_observation` and marks their application cleanup `unverified`.
 Cleanup uncertainty does not authorize signaling unrelated processes.
+
+### Target fuse prerequisites
+
+Active scenario capture requires that the target Electron executable honors Node CLI inspector flags (`--inspect` or `--remote-debugging-port`) so that Playwright can establish its DevTools protocol session.
+
+When an Electron executable explicitly disables the `EnableNodeCliInspectArguments` fuse (or removes the capability), `capture-electron-scenario` fails immediately before process launch with an `AnalysisUnsupportedTargetError` ("unsupported_target") rather than waiting for the startup deadline. For targets with disabled inspector fuses, use passive CDP inspection via `inspect_electron_page` or run against an unrestricted development binary with the extracted `app.asar`.
 
 The real verifier exercises compiled CLI and stdio MCP discovery, page/script
 inspection, static/runtime reconciliation, active observation, and CLI SIGTERM

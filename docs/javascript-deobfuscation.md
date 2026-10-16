@@ -13,12 +13,16 @@ than pretending those results have the same meaning.
 
 ## Caller-supplied engine
 
-The adapter currently verifies js-redox `deobfuscate-safe` **0.1.0** on Linux
-x64. Set `REA_JS_REDOX_COMMAND` to an absolute path to that executable. The
-private runtime filesystem must permit execution: set `TMPDIR` to a writable
-exec-capable filesystem when the host's default temporary directory is mounted
-`noexec`. REA checks executable access to its fingerprinted snapshot before
-launching it and reports this missing prerequisite as a capability error.
+The adapter currently targets js-redox `deobfuscate-safe` **0.1.0** on Linux
+x64. Repository unit and MCP tests exercise the protocol and lifecycle with
+controlled fixtures; they do not build or attest a real external js-redox
+binary. The pinned revision below is the audited reference build used for manual
+real-provider qualification. Set `REA_JS_REDOX_COMMAND` to an absolute path to
+that executable. The private runtime filesystem must permit execution: set
+`TMPDIR` to a writable exec-capable filesystem when the host's default temporary
+directory is mounted `noexec`. REA checks executable access to its fingerprinted
+snapshot before launching it and reports this missing prerequisite as a
+capability error.
 
 The adapter uses util-linux `prlimit` (default `/usr/bin/prlimit`; override with
 absolute `REA_JAVASCRIPT_PRLIMIT_COMMAND`). REA installs neither tool and checks

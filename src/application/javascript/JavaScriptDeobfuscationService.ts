@@ -1,4 +1,13 @@
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { realpath } from "node:fs/promises";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 
 import type { AnalysisError } from "../../domain/analysisErrorBase.js";
 import {
@@ -15,6 +24,7 @@ import { analysisInputErrorFromIssues } from "../../domain/inputIssueProjection.
 import { jsonObjectSchema } from "../../domain/jsonValue.js";
 import { err, ok, type Result } from "../../domain/result.js";
 import type { ExecutionOptions } from "../AnalysisProvider.js";
+import { absoluteCallerPath } from "../../filesystem/callerPath.js";
 import type { JavaScriptDeobfuscationPort } from "./JavaScriptDeobfuscationPort.js";
 
 const OPERATION = "deobfuscate_javascript_source";
@@ -31,7 +41,7 @@ export class JavaScriptDeobfuscationService {
     input: unknown,
     options?: ExecutionOptions,
   ): Promise<Result<Evidence, AnalysisError>> {
-    if (options?.signal?.aborted === true)
+    if (isCancelled(options?.signal))
       return err(new AnalysisCancelledError(OPERATION));
     const parsed = javascriptDeobfuscationInputSchema.safeParse(input);
     if (!parsed.success)
@@ -55,6 +65,31 @@ export class JavaScriptDeobfuscationService {
           })),
         ),
       );
+    let outputRoot: string;
+    try {
+      outputRoot = await canonicalAbsentOutputRoot(
+        parsed.data.output_directory,
+      );
+    } catch (cause: unknown) {
+      return err(
+        new AnalysisInputError(
+          OPERATION,
+          {
+            cause,
+            userMessage:
+              "The parent of output_directory must exist and be resolvable on this host.",
+          },
+          [
+            {
+              path: ["output_directory"],
+              reason: "invalid_value",
+              message:
+                "The parent of output_directory must exist and be resolvable on this host.",
+            },
+          ],
+        ),
+      );
+    }
     const execution = await this.provider.deobfuscate(parsed.data, options);
     if (!execution.ok) return execution;
     const result = javascriptDeobfuscationResultSchema.safeParse(
@@ -67,7 +102,6 @@ export class JavaScriptDeobfuscationService {
           "Deobfuscation did not return a valid result bound to the original source",
         ),
       );
-    const outputRoot = resolve(parsed.data.output_directory);
     const publishedPaths = [
       result.data.source.published_copy.path,
       result.data.output.path,
@@ -106,12 +140,15 @@ export class JavaScriptDeobfuscationService {
           ? {}
           : { rawResult: execution.value.rawResult }),
         locations: execution.value.locations,
-        limitations: execution.value.limitations,
+        limitations: mergeLimitations(
+          result.data.limitations,
+          execution.value.limitations,
+        ),
         confidence: "derived",
         authority: "shipped-artifact",
       },
     );
-    if (options?.signal?.aborted === true)
+    if (isCancelled(options?.signal))
       return err(
         new AnalysisCancelledError(OPERATION, {
           partialObservation: evidence,
@@ -129,3 +166,18 @@ const isWithin = (root: string, path: string): boolean => {
     (!isAbsolute(child) && child !== ".." && !child.startsWith(`..${sep}`))
   );
 };
+
+const isCancelled = (signal?: AbortSignal): boolean => signal?.aborted === true;
+
+const canonicalAbsentOutputRoot = async (
+  requested: string,
+): Promise<string> => {
+  const absolute = absoluteCallerPath(requested);
+  const parent = await realpath(dirname(absolute));
+  return join(parent, basename(absolute));
+};
+
+const mergeLimitations = (
+  normalized: readonly string[],
+  execution: readonly string[],
+): readonly string[] => [...new Set([...normalized, ...execution])];

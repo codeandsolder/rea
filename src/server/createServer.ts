@@ -8,6 +8,7 @@ import type { WasmArtifactService } from "../application/wasm/WasmArtifactServic
 import { wasmArtifactModule } from "../composition/wasm.js";
 import { registerWasmTools } from "./registerWasmTools.js";
 import { snapshotEnvironment } from "../process/snapshotEnvironment.js";
+import { captureProviderEnvironment } from "./providerEnvironment.js";
 import { createPeResourcesService } from "../composition/binaryDiagnostics.js";
 import type { PeResourcesService } from "../application/binaryDiagnostics/PeResourcesService.js";
 import { registerPeResourcesTool } from "./registerPeResourcesTool.js";
@@ -21,7 +22,12 @@ import { registerRecordedCrashTools } from "./registerRecordedCrashTools.js";
 import { createRecordedCrashService } from "../composition/binaryDiagnostics.js";
 import { createGoBinaryService } from "../composition/go.js";
 import type { GoBinaryService } from "../application/go/GoBinaryService.js";
+import { createElectronFuseService } from "../composition/electronFuses.js";
+import type { ElectronFuseService } from "../application/electron/ElectronFuseService.js";
 import { registerGoTools } from "./registerGoTools.js";
+import { createRustBinaryService } from "../composition/rust.js";
+import type { RustBinaryService } from "../application/rust/RustBinaryService.js";
+import { registerRustTools } from "./registerRustTools.js";
 import type { RecordedCrashService } from "../application/binaryDiagnostics/RecordedCrashService.js";
 import { registerAnalysisViewTool } from "./registerAnalysisViewTool.js";
 import { registerBinaryDiagnosticsTools } from "./registerBinaryDiagnosticsTools.js";
@@ -35,8 +41,9 @@ import {
   type ToolResultDelivery,
 } from "./toolResult.js";
 import { parseMcpResponseBudget } from "../config/mcpResponseBudget.js";
+import { parseMcpOutputSchemaProfile } from "../config/mcpOutputSchemaProfile.js";
 import {
-  COMPACT_INPUT_SCHEMA_BUDGET_BYTES,
+  compactPresentationForMcpInputSchemaProfile,
   parseMcpInputSchemaProfile,
 } from "../config/mcpInputSchemaProfile.js";
 import type { CompactInputSchemaPresentation } from "./EvidenceMcpServer.js";
@@ -123,9 +130,18 @@ import {
   type ServerAnalysisSource,
 } from "./analysisAdmission.js";
 import type { WithAdmittedAnalysis } from "./analysisAdmission.js";
+import { createReverseEngineeringService } from "../composition/reverseEngineering.js";
+import { registerReverseEngineeringTools } from "./registerReverseEngineeringTools.js";
+import { CutterBridgeClient } from "../cutter/CutterBridgeClient.js";
+import { CutterBridgeService } from "../cutter/CutterBridgeService.js";
+import { registerCutterTools } from "./registerCutterTools.js";
+import { GdbSessionManager } from "../gdb/GdbSessionManager.js";
+import { registerGdbTools } from "./registerGdbTools.js";
+import { RizinDebugSessionManager } from "../rizin/RizinDebugSessionManager.js";
+import { registerRizinDebugTools } from "./registerRizinDebugTools.js";
 
 const TARGET_FREE_INSTRUCTIONS =
-  "REA provides reverse-engineering tools for local artifacts, native binaries, managed code, browser pages, and runtimes. Use the tool that directly answers the question; discover targets or inspect inventory only when needed. Tool results include inline Evidence and report their coverage and limitations.";
+  "REA provides reverse-engineering tools for local artifacts, native binaries, managed code, browser pages, and runtimes. Use the tool that directly answers the question; discover targets or inspect inventory only when needed. Tool results include inline Evidence and report their coverage and limitations. An opened target persists across turns. When finished, export needed Evidence and call close_binary; its snapshot_path can retain analysis.";
 
 const ACTIVE_TARGET_INSTRUCTIONS =
   "REA analyzes the active reverse-engineering target. Use the analysis tool that answers the question directly. Search or list symbols when discovery is needed; analyze_function provides a function dossier, and focused procedure tools return individual facets.";
@@ -140,11 +156,14 @@ export interface CreateServerOptions {
   readonly packetCapture?: PacketCaptureService;
   readonly signalRecording?: SignalRecordingService;
   readonly wasmArtifact?: WasmArtifactService;
+  readonly providerEnvironment?: Readonly<NodeJS.ProcessEnv>;
   readonly evmInterface?: EvmInterfaceService;
   readonly sqliteDatabase?: SqliteDatabaseService;
   readonly logger?: Logger;
   readonly binaryLayout?: BinaryLayoutService;
   readonly goBinary?: GoBinaryService;
+  readonly rustBinary?: RustBinaryService;
+  readonly electronFuses?: ElectronFuseService;
   readonly recordedCrash?: RecordedCrashService;
   readonly firmwareAnalysis?: FirmwareAnalysisPort;
   readonly javascriptRecovery?: JavaScriptRecoveryPort;
@@ -162,6 +181,8 @@ export interface CreateServerOptions {
   readonly browserObservation?: BrowserObservationPort;
   readonly browserScenarioCapture?: BrowserScenarioCapturePort;
   readonly electronObservation?: ElectronObservationPort;
+  /** Selects who closes the shared optional observation providers. */
+  readonly optionalObservationProviderOwner?: "server" | "caller";
   readonly electronActiveObservation?: ElectronActiveObservationPort;
   readonly javascriptRuntimeObservation?: JavaScriptRuntimeObservationPort;
   readonly fridaInstrumentation?: FridaInstrumentationPort;
@@ -243,6 +264,7 @@ const createMcpServer = (
   session: BinarySessionPort | undefined,
   delivery: ToolResultDelivery,
   compactPresentation: CompactInputSchemaPresentation | undefined,
+  omitOutputSchemas: boolean,
 ): EvidenceMcpServer =>
   new EvidenceMcpServer(
     {
@@ -262,6 +284,7 @@ const createMcpServer = (
       : (evidence) => session.recordEvidence(evidence),
     delivery,
     compactPresentation,
+    omitOutputSchemas,
   );
 
 /**
@@ -276,6 +299,11 @@ export const createServer = (
   const session = source.kind === "session" ? source.session : undefined;
   const analysis = source.kind === "session" ? source.session : source.analysis;
   const environment = snapshotEnvironment(options.environment ?? process.env);
+  const omitOutputSchemas = outputSchemasOmitted(environment);
+  const providerEnvironment = captureProviderEnvironment(
+    options.providerEnvironment,
+    environment,
+  );
   const delivery = selectToolResultDelivery(environment, options.delivery);
   const evmInterface =
     options.evmInterface ?? evmInterfaceModule.create(environment);
@@ -299,6 +327,8 @@ export const createServer = (
     options.javascriptDeobfuscation ??
     createJavaScriptDeobfuscationProvider(environment);
   const artifactResources = new ArtifactResourceScope();
+  const reverseEngineering =
+    createReverseEngineeringService(providerEnvironment);
   const firmwareAnalysis = new FirmwareAnalysisService(
     options.firmwareAnalysis ?? createFirmwareAnalysisProvider(environment),
   );
@@ -321,7 +351,12 @@ export const createServer = (
     session,
     delivery,
     selectCompactInputSchemaPresentation(environment),
+    omitOutputSchemas,
   );
+  const gdbSessions = new GdbSessionManager({
+    environment: providerEnvironment,
+  });
+  const rizinDebugSessions = new RizinDebugSessionManager(providerEnvironment);
   const android =
     options.androidAnalysis ?? createAndroidAnalysisProvider(environment);
   const pcap = options.pcapAnalysis ?? createPcapAnalysisProvider(environment);
@@ -337,6 +372,7 @@ export const createServer = (
     options.packetCapture ?? createPacketCaptureService(environment);
   const signalRecording =
     options.signalRecording ?? createSignalRecordingService(environment);
+  const webRuntime = options.webRuntime ?? createWebRuntimeService();
   const apktool =
     options.apktoolAnalysis ??
     createApktoolResourceAnalysisProvider(environment);
@@ -367,8 +403,20 @@ export const createServer = (
       webNetworkCapture.close(),
       javascriptRecovery.close?.() ?? Promise.resolve(),
       javascriptDeobfuscation.close?.() ?? Promise.resolve(),
+      ...(options.optionalObservationProviderOwner === "caller"
+        ? []
+        : [
+            options.browserObservation?.close?.() ?? Promise.resolve(),
+            options.browserScenarioCapture?.close?.() ?? Promise.resolve(),
+            options.electronObservation?.close?.() ?? Promise.resolve(),
+          ]),
+      webRuntime.provider.close?.() ?? Promise.resolve(),
+
       artifactResources.close(),
+      reverseEngineering.close(),
       firmwareAnalysis.close(),
+      gdbSessions.closeAll(),
+      rizinDebugSessions.closeAll(),
     ])
       .then((results) => {
         const failures = results.flatMap((result) =>
@@ -414,6 +462,28 @@ export const createServer = (
     webNetworkCapture,
   };
   registerBinaryAnalysisTools(toolContext);
+  registerReverseEngineeringTools(
+    server,
+    reverseEngineering,
+    toolLogger,
+    delivery,
+    session === undefined
+      ? undefined
+      : (evidence) => session.recordEvidence(evidence),
+    analysisAdmission,
+    session === undefined
+      ? undefined
+      : () => session.invalidateSnapshotForExternalMutation(),
+    session === undefined
+      ? undefined
+      : (path, signal, operation, rebindFailure) =>
+          session.withAdmittedExternalMutation(
+            path,
+            signal,
+            operation,
+            rebindFailure,
+          ),
+  );
   registerFridaTools(
     server,
     fridaInstrumentation,
@@ -421,7 +491,37 @@ export const createServer = (
     delivery,
     session === undefined
       ? undefined
-      : (input) => session.recordEvidence(input),
+      : (evidence) => session.recordEvidence(evidence),
+  );
+  registerCutterTools(
+    server,
+    new CutterBridgeService(new CutterBridgeClient(providerEnvironment)),
+    toolLogger,
+    delivery,
+    session === undefined
+      ? undefined
+      : (evidence) => session.recordEvidence(evidence),
+    session,
+  );
+  registerGdbTools(
+    server,
+    gdbSessions,
+    toolLogger,
+    delivery,
+    session === undefined
+      ? undefined
+      : (evidence) => session.recordEvidence(evidence),
+    session,
+  );
+  registerRizinDebugTools(
+    server,
+    rizinDebugSessions,
+    toolLogger,
+    delivery,
+    session === undefined
+      ? undefined
+      : (evidence) => session.recordEvidence(evidence),
+    session,
   );
   const previousOnclose = server.server.onclose;
   server.server.onclose = () => {
@@ -460,6 +560,7 @@ export const createServer = (
     evmInterface,
     jeb,
     firmwareAnalysis,
+    webRuntime,
   );
   registerAdbTools(
     server,
@@ -502,6 +603,11 @@ export const createServer = (
         : { availabilityPolicy: availability.policy }),
       androidAnalysisAvailability: (signal) =>
         android.inspectAvailability(signal),
+      adbAnalysisAvailability: (signal) =>
+        adbDevice.inspectAvailability(signal),
+      apktoolAnalysisAvailability: (signal) =>
+        apktool.inspectAvailability(signal),
+      jebAnalysisAvailability: (signal) => jeb.inspectAvailability(signal),
       startedAt,
     });
   }
@@ -520,6 +626,16 @@ const selectToolResultDelivery = (
   return createToolResultDelivery(configured.value);
 };
 
+const outputSchemasOmitted = (
+  environment: Readonly<NodeJS.ProcessEnv>,
+): boolean => {
+  const configured = parseMcpOutputSchemaProfile(
+    environment.REA_MCP_OUTPUT_SCHEMA_PROFILE,
+  );
+  if (!configured.ok) throw configured.error;
+  return configured.value === "off";
+};
+
 const selectCompactInputSchemaPresentation = (
   environment: Readonly<NodeJS.ProcessEnv>,
 ): CompactInputSchemaPresentation | undefined => {
@@ -527,9 +643,7 @@ const selectCompactInputSchemaPresentation = (
     environment.REA_MCP_INPUT_SCHEMA_PROFILE,
   );
   if (!configured.ok) throw configured.error;
-  return configured.value === "compact"
-    ? { budgetBytes: COMPACT_INPUT_SCHEMA_BUDGET_BYTES }
-    : undefined;
+  return compactPresentationForMcpInputSchemaProfile(configured.value);
 };
 
 const registerConfiguredAnalysisTools = (
@@ -550,6 +664,7 @@ const registerConfiguredAnalysisTools = (
   evmInterface: EvmInterfaceService,
   jeb: JebAnalysisPort,
   firmwareAnalysis: FirmwareAnalysisService,
+  webRuntime: WebRuntimeService,
 ): void => {
   registerAndroidTools(
     server,
@@ -591,6 +706,13 @@ const registerConfiguredAnalysisTools = (
   registerGoTools(
     server,
     goBinary,
+    toolLogger,
+    recordEvidence,
+    withAdmittedAnalysis,
+  );
+  registerRustTools(
+    server,
+    options.rustBinary ?? createRustBinaryService(),
     toolLogger,
     recordEvidence,
     withAdmittedAnalysis,
@@ -648,7 +770,7 @@ const registerConfiguredAnalysisTools = (
   );
   registerWebRuntimeTools(
     server,
-    options.webRuntime ?? createWebRuntimeService(),
+    webRuntime,
     toolLogger,
     recordEvidence,
     withAdmittedAnalysis,
@@ -807,6 +929,7 @@ const registerObservationTools = ({
     evidenceById,
     electron: options.electronObservation,
     electronActive: options.electronActiveObservation,
+    electronFuses: options.electronFuses ?? createElectronFuseService(),
     observationLoadFailure:
       options.optionalProviderLoadFailures?.electronObservation,
     activeLoadFailure:

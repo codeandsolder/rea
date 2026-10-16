@@ -105,8 +105,8 @@ export const addJavaScriptSourceModules = (
           label: file.path,
           properties: {
             semantic_role: "source-module",
+            source_sha256: file.sha256,
             path: file.path,
-            container_sha256: file.container_sha256,
             logical_module_key: file.path,
             module_format: moduleFormat(file.path, semantic.ir),
             import_relationships: semantic.ir.moduleLinks.filter(
@@ -289,6 +289,8 @@ const resolveModuleTarget = (
     sourcePath: input.file.path,
     context: "module-specifier",
     files: input.context.filesByPath,
+    directoryPaths: input.context.directoryPaths,
+    unanalyzedFiles: input.context.unanalyzedFiles,
     moduleKind: moduleResolutionModeForJavaScriptReference(
       input.file.path,
       input.link.kind === "require" || input.link.kind === "commonjs-export"

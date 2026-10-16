@@ -1,15 +1,15 @@
+import { analysisViewInputError } from "./analysisViewErrors.js";
 import { z } from "zod";
 import type { AnalysisError } from "../analysisErrorBase.js";
 import { uniqueSorted } from "../canonicalOrdering.js";
 import { isMachOFormat } from "../binaryTargetTypes.js";
-import { analysisInputErrorFromIssues } from "../inputIssueProjection.js";
 import { inspectMachoSchema } from "../native/nativeInspection.js";
 import { err, ok, type Result } from "../result.js";
-import {
-  analysisViewInputError,
-  type AnalysisViewParent,
-  type AnalysisViewRequest,
-  type UnsignedAnalysisView,
+import { parseAnalysisViewResult } from "./analysisViewParent.js";
+import type {
+  AnalysisViewParent,
+  AnalysisViewRequest,
+  UnsignedAnalysisView,
 } from "./analysisView.js";
 import {
   completeWithinViewCoverage,
@@ -93,19 +93,8 @@ type MachoReport = z.output<typeof inspectMachoSchema>;
 const parseMachoReport = (
   parent: AnalysisViewParent,
 ): Result<MachoReport, AnalysisError> => {
-  const parsed = inspectMachoSchema.safeParse(parent.normalizedResult);
-  if (!parsed.success)
-    return err(
-      analysisInputErrorFromIssues(
-        "inspect_analysis_view",
-        parsed.error.issues.map((issue) => ({
-          ...issue,
-          path: ["source", "normalized_result", ...issue.path],
-        })),
-        { source: { normalized_result: parent.normalizedResult } },
-        { cause: parsed.error },
-      ),
-    );
+  const parsed = parseAnalysisViewResult(inspectMachoSchema, parent);
+  if (!parsed.ok) return parsed;
   if (parent.subject != null && !isMachOFormat(parent.subject.format))
     return err(
       analysisViewInputError([
@@ -117,7 +106,7 @@ const parseMachoReport = (
         },
       ]),
     );
-  return ok(parsed.data);
+  return ok(parsed.value);
 };
 
 /** Counts replace rows; every collection caveat stays in the limitations. */

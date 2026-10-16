@@ -144,6 +144,51 @@ it("keeps every translated README and authored guide on the documentation lane",
   });
 });
 
+it.each(["cjs", "cts", "js", "jsx", "mjs", "mts", "ts", "tsx"])(
+  "selects static checks for authored documentation code (%s) without provider lanes",
+  async (extension) => {
+    const { directory, base } = await fixture();
+    const head = await change(directory, [
+      `docs/.vitepress/helpers/navigation.${extension}`,
+    ]);
+    const plan = await classify(directory, base, head);
+    const { CI_FLAGS } = await loadScopes();
+    expect(plan).toMatchObject({ tier: "fast", code: true, docs: true });
+    for (const flag of CI_FLAGS)
+      if (flag !== "code" && flag !== "docs") expect(plan[flag]).toBe(false);
+  },
+);
+
+it("retains code checks when documentation code is removed or renamed to Markdown", async () => {
+  const { directory } = await fixture();
+  const base = await change(directory, ["docs/.vitepress/config.ts"]);
+  await git(directory, [
+    "mv",
+    "docs/.vitepress/config.ts",
+    "docs/configuration.md",
+  ]);
+  const head = await commit(directory);
+  expect(await classify(directory, base, head)).toMatchObject({
+    code: true,
+    docs: true,
+    runtime: false,
+    package: false,
+  });
+});
+
+it("selects code checks for documentation filenames containing line separators", async () => {
+  const { directory, base } = await fixture();
+  const head = await change(directory, [
+    "docs/.vitepress/navigation\u2028menu.ts",
+  ]);
+  expect(await classify(directory, base, head)).toMatchObject({
+    code: true,
+    docs: true,
+    runtime: false,
+    package: false,
+  });
+});
+
 it.each([
   "job-timings.mjs",
   "job-timings-batch.mjs",
@@ -214,6 +259,85 @@ it("does not charge a documentation PR for unrelated implementation updates on m
     package: false,
   });
 });
+
+it.each([
+  "src/gdb/GdbSessionManager.ts",
+  "src/rizin/RizinDebugSessionManager.ts",
+  "src/cutter/CutterBridgeClient.ts",
+  "src/objdump/ObjdumpCommand.ts",
+  "tests/boundary/providers/GdbSessionManagerCoverage.test.ts",
+  "tests/boundary/providers/GdbCommandQueue.test.ts",
+  "tests/boundary/providers/RizinDebugSessionCoverage.part3.test.ts",
+  "tests/boundary/providers/RizinCommandTimeout.test.ts",
+  "tests/boundary/providers/RizinTimeoutEvidence.test.ts",
+  "tests/boundary/providers/GdbSessionReviewRegressions.test.ts",
+  "tests/boundary/providers/gdbTestHelpers.ts",
+  "tests/boundary/providers/RizinDebugSessionReviewRegressions.test.ts",
+  "tests/boundary/mcp/gdbCancellationMcp.test.ts",
+  "tests/boundary/mcp/rizinDebuggerCancellationMcp.test.ts",
+  "tests/boundary/mcp/rizinPendingOutput.test.ts",
+  "tests/composition/reverseEngineeringAdmission.test.ts",
+  "tests/support/reverseEngineeringMcpHarness.ts",
+  "tests/support/reverseEngineeringCompositionEdgeCases.ts",
+  "tests/support/reverseEngineeringCompositionFixtures.ts",
+  "tests/support/reverseEngineeringService.ts",
+  "tests/support/ownedRizinCommandEvidenceTests.ts",
+  "tests/support/reverseDebuggerMcpTestHelpers.ts",
+  "tests/boundary/cli/gdbStartupCleanupCli.test.ts",
+  "vitest.reverse-tools.config.ts",
+  "vitest.reverse-tools-semantics.config.ts",
+  "stryker.config.mjs",
+  "stryker.semantics.config.mjs",
+  "tsconfig.reverse-tools-mutation.json",
+  "scripts/prepare-reverse-tools-mutation.mjs",
+  "scripts/lib/reverse-tools-mutation-targets.mjs",
+])(
+  "selects the reverse-tool coverage and mutation gate for %s",
+  async (path) => {
+    const { directory, base } = await fixture();
+    const head = await change(directory, [path]);
+    expect(await classify(directory, base, head)).toMatchObject({
+      code: true,
+      reverse_tools: true,
+    });
+  },
+);
+
+const reverseToolsVitestConfig = await readFile(
+  new URL("../../../vitest.reverse-tools.config.ts", import.meta.url),
+  "utf8",
+);
+const reverseToolsVitestInputs = [
+  ...reverseToolsVitestConfig.matchAll(/"((?:\.\/)?(?:src|tests)\/[^"]+)"/gu),
+].flatMap((match) =>
+  match[1] === undefined ? [] : [match[1].replace(/^\.\//u, "")],
+);
+const reverseToolsMutationConfig = JSON.parse(
+  await readFile(
+    new URL("../../../tsconfig.reverse-tools-mutation.json", import.meta.url),
+    "utf8",
+  ),
+) as { include: string[] };
+const reverseToolsInputs = [
+  ...new Set([
+    ...reverseToolsVitestInputs,
+    ...reverseToolsMutationConfig.include.map((path) =>
+      path.replace(/^\.\//u, ""),
+    ),
+  ]),
+];
+
+it.each(reverseToolsInputs)(
+  "selects the reverse-tool quality gate for configured input %s",
+  async (path) => {
+    const { directory, base } = await fixture();
+    const head = await change(directory, [path]);
+    expect(await classify(directory, base, head)).toMatchObject({
+      code: true,
+      reverse_tools: true,
+    });
+  },
+);
 
 it.each([
   "src/README.md",
@@ -293,7 +417,10 @@ it.each(["", "not-a-commit"])(
   },
 );
 
-it("selects only a trusted successful ancestor from recent CI push runs", async () => {
+it("selects only a trusted successful ancestor from recent CI push runs", async ({
+  skip,
+}) => {
+  skip(process.platform === "win32", "the fake gh is a POSIX shell script");
   const { directory, base } = await fixture();
   const head = await change(directory, ["src/evm/client.ts"]);
   const bin = join(directory, "fake-bin");
@@ -326,7 +453,11 @@ it("selects only a trusted successful ancestor from recent CI push runs", async 
   const output = join(directory, "baseline-output");
   const result = await execFileAsync(
     process.execPath,
-    [new URL("../../../scripts/ci/baseline.mjs", import.meta.url).pathname],
+    [
+      fileURLToPath(
+        new URL("../../../scripts/ci/baseline.mjs", import.meta.url),
+      ),
+    ],
     {
       cwd: directory,
       env: {
@@ -344,7 +475,8 @@ it("selects only a trusted successful ancestor from recent CI push runs", async 
   expect(await readFile(output, "utf8")).toBe(`base=${base}\nreason=\n`);
 });
 
-it("returns an empty baseline when GitHub lookup fails", async () => {
+it("returns an empty baseline when GitHub lookup fails", async ({ skip }) => {
+  skip(process.platform === "win32", "the fake gh is a POSIX shell script");
   const { directory, base } = await fixture();
   const head = await change(directory, ["src/evm/client.ts"]);
   const bin = join(directory, "fake-bin");
@@ -354,7 +486,11 @@ it("returns an empty baseline when GitHub lookup fails", async () => {
   await chmod(gh, 0o755);
   const result = await execFileAsync(
     process.execPath,
-    [new URL("../../../scripts/ci/baseline.mjs", import.meta.url).pathname],
+    [
+      fileURLToPath(
+        new URL("../../../scripts/ci/baseline.mjs", import.meta.url),
+      ),
+    ],
     {
       cwd: directory,
       env: {
@@ -477,6 +613,10 @@ it.each([
   ],
   ["website/src/index.ts", { code: false, website: true, package: false }],
   [
+    "website/public/examples/notes-electron/preload.js",
+    { code: true, website: true, package: false },
+  ],
+  [
     "website/locales/zh-CN/messages.po",
     { code: false, website: true, package: false },
   ],
@@ -514,8 +654,34 @@ it.each([
     },
   ],
   [
+    "scripts/verify-ghidra-bridge-sources.mjs",
+    { code: true, ghidra_bridge: true, runtime: false, package: false },
+  ],
+  [
+    "src/ghidra/GhidraBridgeSources.ts",
+    { code: true, ghidra_bridge: true, runtime: true, package: true },
+  ],
+  [
+    "src/ghidra/GhidraJavaProperties.ts",
+    { code: true, ghidra_bridge: true, runtime: true, package: false },
+  ],
+  [
+    "src/ghidra/GhidraReleasePolicy.ts",
+    { code: true, ghidra_bridge: true, runtime: true },
+  ],
+  [
+    ".github/workflows/ghidra-bridge-sources.yml",
+    { code: false, ghidra_bridge: true, runtime: false, package: false },
+  ],
+  [
     "bridge/ghidra/Example.java",
-    { code: true, runtime: true, package: false, apple: false },
+    {
+      code: true,
+      runtime: true,
+      ghidra_bridge: true,
+      package: false,
+      apple: false,
+    },
   ],
   [
     "src/native/AppleExample.ts",
@@ -593,7 +759,10 @@ it.each([
     "src/domain/analysisErrorProjection.ts",
     { code: true, sqlite: true, runtime: true },
   ],
-  ["src/domain/javascript/example.ts", { code: true, sqlite: false }],
+  [
+    "src/domain/javascript/example.ts",
+    { code: true, sqlite: false, ghidra_bridge: false },
+  ],
 ])("selects the appropriate lanes for %s", async (path, expected) => {
   const { directory, base } = await fixture();
   const head = await change(directory, [path]);
@@ -692,6 +861,7 @@ it.each([
   ["web_runtime", "real-web-runtime"],
   ["web_source_map", "real-web-source-map"],
   ["nativeaot", "nativeaot-fixtures"],
+  ["ghidra_bridge", "ghidra-bridge-sources"],
   ["website", "website-check"],
 ])(
   "routes %s through the selector without a duplicate PR trigger",
@@ -770,6 +940,10 @@ it("rejects skipped selected work while allowing unselected lanes to skip", asyn
 
 it.each([
   [
+    ".github/workflows/mutation.yml",
+    { workflows: true, code: true, reverse_tools: true, package: false },
+  ],
+  [
     ".github/workflows/sqlite-runtime.yml",
     { workflows: true, code: true, package: false, website: false },
   ],
@@ -793,7 +967,16 @@ it.each([
     "tsconfig.build.json",
     { code: true, package: true, browser: true, evm: true },
   ],
-  ["docs/.vitepress/config.ts", { code: false, docs: true, package: false }],
+  ["docs/.vitepress/config.ts", { code: true, docs: true, package: false }],
+  [
+    "docs/package.json",
+    { code: true, docs: true, runtime: false, package: false },
+  ],
+  [
+    "docs/.vitepress/package.json",
+    { code: true, docs: true, runtime: false, package: false },
+  ],
+  ["docs/data.json", { code: false, docs: true, package: false }],
   ["CHANGELOG.md", { code: false, docs: true, package: false }],
   ["SECURITY.md", { code: false, docs: true, package: false }],
   [".github/pull_request_template.md", { code: false, docs: true }],
@@ -809,6 +992,10 @@ it.each([
   ["scripts/unknown-website-helper.mjs", { code: true, package: true }],
   [
     ".github/workflows/release.yml",
+    { workflows: true, code: true, package: false, website: false },
+  ],
+  [
+    ".github/workflows/pr-readiness.yml",
     { workflows: true, code: true, package: false, website: false },
   ],
   [

@@ -2,8 +2,16 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile, readdir } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/client";
@@ -16,6 +24,7 @@ import {
   requireMcpToolError,
 } from "./lib/mcp-verifier-results.mjs";
 import { createVerifierRun, completeVerifierRun } from "./lib/verifier-run.mjs";
+import { WABT_OPERATION_TIMEOUT_MS } from "./lib/wabt-verifier-timeouts.mjs";
 
 const directory = process.env.REA_WABT_BIN_DIRECTORY;
 if (!isAbsolute(directory ?? "")) {
@@ -51,11 +60,34 @@ const tool = (name, args, cwd) =>
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const run = createVerifierRun();
 const root = await PrivateRuntimeRoot.create({ prefix: "rea-wabt-verifier-" });
+// Keep provider scratch outside the leased private input root. On Windows the
+// root's retained DELETE handle blocks child temp creation beneath that root.
+let childTempRoot;
+try {
+  childTempRoot = await mkdtemp(join(tmpdir(), "rea-wabt-child-temp-"));
+} catch (cause) {
+  try {
+    await root.close();
+  } catch (cleanupCause) {
+    throw new AggregateError(
+      [cause, cleanupCause],
+      "Could not allocate verifier temp space or release its private root.",
+    );
+  }
+  throw cause;
+}
 const client = new Client({ name: "wabt-artifact-verifier", version: "1" });
+const callTool = (request) =>
+  client.callTool(request, { timeout: WABT_OPERATION_TIMEOUT_MS });
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [entrypoint, "mcp"],
-  env: { ...environment, TMPDIR: root.path, TMP: root.path, TEMP: root.path },
+  env: {
+    ...environment,
+    TMPDIR: childTempRoot,
+    TMP: childTempRoot,
+    TEMP: childTempRoot,
+  },
   stderr: "pipe",
 });
 let cases = 0;
@@ -95,11 +127,11 @@ try {
             {
               env: {
                 ...environment,
-                TMPDIR: root.path,
-                TMP: root.path,
-                TEMP: root.path,
+                TMPDIR: childTempRoot,
+                TMP: childTempRoot,
+                TEMP: childTempRoot,
               },
-              timeout: 120_000,
+              timeout: WABT_OPERATION_TIMEOUT_MS,
               maxBuffer: 64 * 1024 * 1024,
             },
           )
@@ -190,17 +222,26 @@ try {
     const candidate = join(candidateRoot, "module.wasm");
     await writeFile(join(candidateRoot, "source.wat"), "(module (memory 2))");
     await tool("wat2wasm", ["source.wat", "-o", "module.wasm"], candidateRoot);
-    const glue = join(fixtureRoot, "glue.js");
-    await writeFile(
-      glue,
-      'fetch("./module.wasm"); new URL("https://example.invalid/module.wasm?version=1", import.meta.url);',
+    const glueSource =
+      'fetch("./module.wasm"); new URL("https://example.invalid/module.wasm?version=1", import.meta.url);';
+    const glueSources = [
+      glueSource,
+      `\uFEFF${glueSource}`,
+      `\uFEFF\n${glueSource}`,
+      `#!/usr/bin/env node\n${glueSource}`,
+      `\uFEFF#!/usr/bin/env node\n${glueSource}`,
+    ];
+    const gluePaths = glueSources.map((_, index) =>
+      join(fixtureRoot, `glue-${index}.js`),
     );
-    const input = { path, glue_paths: [glue], candidate_paths: [candidate] };
+    for (const [index, gluePath] of gluePaths.entries())
+      await writeFile(gluePath, glueSources[index]);
+    const input = { path, glue_paths: gluePaths, candidate_paths: [candidate] };
     assert.ok(ajv.validate(advertised.inputSchema, input));
     const cliValue = await inspectCli(input);
     assert.equal(cliValue.category, undefined, JSON.stringify(cliValue));
     const cli = parseEvidence(cliValue);
-    const reply = await client.callTool({
+    const reply = await callTool({
       name: "inspect_wasm_artifact",
       arguments: input,
     });
@@ -219,11 +260,31 @@ try {
     assert.equal(report.wat.sha256, sha256(wat));
     assert.equal(report.headers, `${headers}\n`);
     assert.equal(report.details, details.slice(1));
-    assert.equal(report.glue[0].artifact.sha256, sha256(await readFile(glue)));
-    assert.deepEqual(
-      report.glue[0].references.map(({ candidate_paths }) => candidate_paths),
-      [[path], [path, candidate]],
-    );
+    assert.equal(report.glue.length, glueSources.length);
+    for (const [index, source] of glueSources.entries()) {
+      const observed = report.glue[index];
+      assert.equal(observed.artifact.path, gluePaths[index]);
+      assert.equal(observed.artifact.sha256, sha256(source));
+      assert.equal(observed.artifact.bytes, Buffer.byteLength(source));
+      assert.equal(await readFile(gluePaths[index], "utf8"), source);
+      assert.equal(observed.parse_status, "complete");
+      assert.deepEqual(
+        observed.references.map(({ candidate_paths }) => candidate_paths),
+        [[path], [path, candidate]],
+      );
+      assert.deepEqual(
+        observed.references.map(({ line, column }) => ({ line, column })),
+        ["./module.wasm", "https://example.invalid/module.wasm?version=1"].map(
+          (value) => {
+            const offset = source.indexOf(`"${value}"`);
+            return {
+              line: source.slice(0, offset).split("\n").length,
+              column: offset - source.lastIndexOf("\n", offset) - 1,
+            };
+          },
+        ),
+      );
+    }
     assert.notEqual(report.candidates[0].sha256, report.candidates[1].sha256);
     for (const command of report.tool_profile.commands)
       assert.equal(command.sha256, sha256(await readFile(command.path)));
@@ -274,7 +335,7 @@ try {
         },
       );
     }
-    const bundleReply = await client.callTool({
+    const bundleReply = await callTool({
       name: "get_evidence_bundle",
       arguments: {},
     });
@@ -304,7 +365,7 @@ try {
         JSON.stringify(cliError),
       );
       const error = requireMcpToolError(
-        await client.callTool({
+        await callTool({
           name: "inspect_wasm_artifact",
           arguments: invalidInput,
         }),
@@ -312,7 +373,7 @@ try {
       assert.equal(error.category, "invalid_input");
       const partial = error.details.partial_observation;
       assert.equal(partial.kind, "retained-evidence");
-      const failedBundleReply = await client.callTool({
+      const failedBundleReply = await callTool({
         name: "get_evidence_bundle",
         arguments: {},
       });
@@ -359,10 +420,23 @@ try {
 }
 try {
   assert.ok(
-    !(await readdir(root.path)).some((name) => name.startsWith("rea-wabt-")),
+    !(await readdir(childTempRoot)).some((name) =>
+      name.startsWith("rea-wabt-"),
+    ),
     "Provider workspace leaked",
   );
+} catch (cause) {
+  failures.push(cause);
+}
+// Each directory is an independent owner. Attempt every cleanup even if a
+// residue assertion or another owner's close fails, retaining every error.
+try {
   await root.close();
+} catch (cause) {
+  failures.push(cause);
+}
+try {
+  await rm(childTempRoot, { recursive: true, force: true });
 } catch (cause) {
   failures.push(cause);
 }
