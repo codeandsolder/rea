@@ -42,7 +42,7 @@ const result = (outputRoot = "/tmp/out"): JavaScriptDeobfuscationResult => ({
   limitations: [],
 });
 
-describe("JavaScript deobfuscation workflow", () => {
+describe("JavaScript deobfuscation provider bindings", () => {
   it.each(["changed", "unchanged"] as const)(
     "rejects %s status that contradicts source/output digests",
     async (status) => {
@@ -141,7 +141,9 @@ describe("JavaScript deobfuscation workflow", () => {
       }),
     ).toEqual(err(failure));
   });
+});
 
+describe("JavaScript deobfuscation Evidence and output binding", () => {
   it("accepts a schema-valid result bound to JavaScript Evidence", async () => {
     const service = new JavaScriptDeobfuscationService({
       deobfuscate: async () =>
@@ -248,7 +250,9 @@ describe("JavaScript deobfuscation workflow", () => {
       "execution cleanup caveat",
     ]);
   });
+});
 
+describe("JavaScript deobfuscation boundary validation", () => {
   it.each([
     "invalid-result",
     "missing-subject",
