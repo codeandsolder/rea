@@ -320,6 +320,7 @@ export const createServer = (
   const goBinary = options.goBinary ?? createGoBinaryService();
   const rustBinary = options.rustBinary ?? createRustBinaryService();
   const peResources = createPeResourcesService();
+  const electronFuses = options.electronFuses ?? createElectronFuseService();
   const webNetworkCapture =
     options.webNetworkCapture ?? createWebNetworkCaptureService(environment);
   const javascriptRecovery =
@@ -406,6 +407,7 @@ export const createServer = (
       goBinary.close(),
       rustBinary.close(),
       peResources.close(),
+      electronFuses.close(),
       webNetworkCapture.close(),
       javascriptRecovery.close?.() ?? Promise.resolve(),
       javascriptDeobfuscation.close?.() ?? Promise.resolve(),
@@ -415,6 +417,7 @@ export const createServer = (
             options.browserObservation?.close?.() ?? Promise.resolve(),
             options.browserScenarioCapture?.close?.() ?? Promise.resolve(),
             options.electronObservation?.close?.() ?? Promise.resolve(),
+            options.electronActiveObservation?.close?.() ?? Promise.resolve(),
           ]),
       webRuntime.provider.close?.() ?? Promise.resolve(),
 
@@ -466,6 +469,7 @@ export const createServer = (
     goBinary,
     rustBinary,
     peResources,
+    electronFuses,
     webNetworkCapture,
   };
   registerBinaryAnalysisTools(toolContext);
@@ -845,6 +849,7 @@ interface ServerToolContext extends ReturnType<typeof createSessionRecorders> {
   readonly goBinary: GoBinaryService;
   readonly rustBinary: RustBinaryService;
   readonly peResources: PeResourcesService;
+  readonly electronFuses: ElectronFuseService;
   readonly webNetworkCapture: WebNetworkCaptureService;
   readonly artifactResources: ArtifactResourceScope;
   readonly server: EvidenceMcpServer;
@@ -911,6 +916,7 @@ const registerBinaryAnalysisTools = ({
 };
 
 const registerObservationTools = ({
+  electronFuses,
   evidenceById,
   server,
   options,
@@ -938,7 +944,7 @@ const registerObservationTools = ({
     evidenceById,
     electron: options.electronObservation,
     electronActive: options.electronActiveObservation,
-    electronFuses: options.electronFuses ?? createElectronFuseService(),
+    electronFuses,
     observationLoadFailure:
       options.optionalProviderLoadFailures?.electronObservation,
     activeLoadFailure:

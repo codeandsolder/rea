@@ -43,13 +43,15 @@ export type RegularFileReadOutcome<Value> = RegularFileOperationOutcome<Value>;
 export const retryRegularFileCleanup = async <Value>(
   failure: RegularFileCleanupFailure<Value>,
   resources: ArtifactResourceScope,
+  signal?: AbortSignal,
 ): Promise<{
   readonly outcome: RegularFileReadOutcome<Value>;
   readonly cleanup?: AnalysisCleanupObservation;
 }> => {
   const outcome: RegularFileReadOutcome<Value> =
     failure.outcome.kind === "failed" &&
-    failure.outcome.cause instanceof RegularFileOperationCancelled
+    failure.outcome.cause instanceof RegularFileOperationCancelled &&
+    !(signal?.aborted === true && failure.outcome.cause === signal.reason)
       ? { kind: "failed", cause: failure.outcome.cause.reason }
       : failure.outcome;
   const released = await resources.release({
@@ -64,6 +66,46 @@ export const retryRegularFileCleanup = async <Value>(
       reason: `${failureMessage(failure.cleanupCause)}; retry: ${failureMessage(released.cause)}`,
       resources: [failure.path],
     },
+  };
+};
+
+/** Retry every explicit nested operation owner; close rejection values grant no authority. */
+export const retryRegularFileCleanupFailures = async (
+  failure: RegularFileCleanupFailure,
+  resources: ArtifactResourceScope,
+): Promise<{
+  readonly primary: unknown;
+  readonly failures: readonly RegularFileCleanupFailure[];
+  readonly cleanup?: AnalysisCleanupObservation;
+}> => {
+  const failures: RegularFileCleanupFailure[] = [];
+  const observations: AnalysisCleanupObservation[] = [];
+  let current = failure;
+  let primary: unknown;
+  for (;;) {
+    failures.push(current);
+    const retried = await retryRegularFileCleanup(current, resources);
+    if (retried.cleanup !== undefined) observations.push(retried.cleanup);
+    primary =
+      retried.outcome.kind === "failed"
+        ? retried.outcome.cause
+        : current.cleanupCause;
+    const nested =
+      current.outcome.kind === "failed" ? current.outcome.cause : undefined;
+    if (!(nested instanceof RegularFileCleanupFailure)) break;
+    current = nested;
+  }
+  return {
+    primary,
+    failures,
+    ...(observations.length === 0
+      ? {}
+      : {
+          cleanup: {
+            reason: observations.map(({ reason }) => reason).join("; "),
+            resources: observations.flatMap(({ resources }) => resources),
+          },
+        }),
   };
 };
 
@@ -106,6 +148,9 @@ export const withRegularFile = async <Value>(
         },
       );
     } catch (cause: unknown) {
+      // Caller reasons are opaque, including objects shaped like file failures.
+      // They do not transfer ownership of any descriptor to this operation.
+      if (signal?.aborted === true && cause === signal.reason) throw cause;
       if (cause instanceof RegularFileOperationCancelled) throw cause.reason;
       if (
         cause instanceof RegularFileCancelled &&
@@ -117,7 +162,7 @@ export const withRegularFile = async <Value>(
         resources === undefined
       )
         throw cause;
-      const retry = await retryRegularFileCleanup(cause, resources);
+      const retry = await retryRegularFileCleanup(cause, resources, signal);
       if (retry.cleanup !== undefined) throw cause;
       if (retry.outcome.kind === "failed") throw retry.outcome.cause;
       return retry.outcome.value;
@@ -143,25 +188,36 @@ export const readRegularFileText = (
   path: string,
   options: RegularFileReadOptions = {},
 ): Promise<string> =>
+  readRegularFileContent(path, (bytes) => decodeFileText(path, bytes), options);
+
+/** Retain the read owner's verified file state together with its decoded text. */
+export const readRegularFileTextSnapshot = (
+  path: string,
+  options: RegularFileReadOptions = {},
+): Promise<{ readonly text: string; readonly state: Stats }> =>
   readRegularFileContent(
     path,
-    (bytes) => {
-      try {
-        return new TextDecoder("utf-8", {
-          fatal: true,
-          ignoreBOM: true,
-        }).decode(bytes);
-      } catch (cause: unknown) {
-        if (!(cause instanceof TypeError)) throw cause;
-        throw new InvalidUtf8FileError(path, cause);
-      }
-    },
+    (bytes, state) => ({
+      text: decodeFileText(path, bytes),
+      state,
+    }),
     options,
   );
 
+const decodeFileText = (path: string, bytes: Buffer): string => {
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+      bytes,
+    );
+  } catch (cause: unknown) {
+    if (!(cause instanceof TypeError)) throw cause;
+    throw new InvalidUtf8FileError(path, cause);
+  }
+};
+
 const readRegularFileContent = <Value>(
   path: string,
-  decode: (bytes: Buffer) => Value,
+  decode: (bytes: Buffer, state: Stats) => Value,
   options: RegularFileReadOptions,
 ): Promise<Value> =>
   withRegularFile(
@@ -174,7 +230,7 @@ const readRegularFileContent = <Value>(
       );
       if (bytes === undefined || bytes.length !== stats.size)
         throw new RegularFileChangedError(path);
-      return decode(bytes);
+      return decode(bytes, stats);
     },
     options,
   );

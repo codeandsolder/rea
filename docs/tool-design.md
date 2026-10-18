@@ -79,10 +79,20 @@ providers need not expose identical state machines.
   and resource release separate. A valid process handle, successful launcher,
   or selected target establishes only its own fact. Publish available identity
   and exit observations even when launch fails; retain unknown ownership.
+- Process exit does not establish output closure. The shared process supervisor
+  retains at most 64 KiB of additional diagnostics from owned stop entry,
+  including pending cleanup and retries, and drains for up to one second after
+  verified stop. It marks output incomplete when closure cannot be
+  observed and releases owned event-loop references without changing the proven
+  process-cleanup outcome. Failed process cleanup retains capture for retry;
+  borrowed processes and streams retain their own lifetime and reference state.
 - Authenticate and capture identity through the same boundary on initial and
   recovery handshakes. Bound abandoned unauthenticated listeners where the
   protocol permits it; that deadline must not expire authenticated idle sessions
   or long-running native work. Listener expiry does not prove target closure.
+- Readiness observations may await owned prerequisite commands. Status must
+  remain readable during owner finalization without starting replacement work;
+  report readiness as unknown when it cannot be re-observed.
 - Shared startup has one producer and independently cancellable caller waits.
   Keep it running while any caller still needs it. The final departing caller
   waits for owned cleanup and retains its failure. Provider closure is distinct
@@ -95,6 +105,9 @@ providers need not expose identical state machines.
   primary failure and let incomplete cleanup retain its own classification.
   Preserve the caller's abort reason as the typed cancellation error's cause,
   including when cancellation is observed only after provider completion.
+  Shared command owners must retain the observed cancellation reason separately
+  from physical failures and cleanup ownership. Carry that fact through failure
+  wrapping so adapters can preserve the exact reason without interpreting it.
   Client cancellation alone does not prove native work stopped.
   For atomic publication, document the cancellation cutoff and preserve any
   committed output's publication receipt.

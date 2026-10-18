@@ -1,5 +1,8 @@
 import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
-import { artifactFileCancellationCause } from "../artifacts/ArtifactFileOperation.js";
+import {
+  artifactFileCancellationCause,
+  bindArtifactFileCleanup,
+} from "../artifacts/ArtifactFileOperation.js";
 import { boundedUtf8Text } from "../process/boundedUtf8Text.js";
 import type { ProviderProcessSnapshot } from "../process/ProviderProcess.js";
 import { AnalysisError } from "../domain/analysisErrorBase.js";
@@ -34,6 +37,16 @@ const outputLimitExcerpt = (snapshot: ProviderProcessSnapshot) => ({
 });
 /** Preserve lifecycle failures and diagnostic bytes instead of returning partial success. */
 export const wabtFailure = (
+  cause: unknown,
+  phase: "configuration" | "artifact" | "producer",
+  path: string,
+): AnalysisError => {
+  const failure = classifyWabtFailure(cause, phase, path);
+  bindArtifactFileCleanup(cause, failure);
+  return failure;
+};
+
+const classifyWabtFailure = (
   cause: unknown,
   phase: "configuration" | "artifact" | "producer",
   path: string,
@@ -137,6 +150,25 @@ export const wabtFailure = (
         cause,
         ...cleanupOptions,
         userMessage: `${reason} Supply WABT 1.0.42 via absolute REA_WABT_BIN_DIRECTORY; REA does not install tools.`,
+      },
+    );
+  if (
+    phase === "artifact" &&
+    cause instanceof ArtifactReaderFailure &&
+    cause.reason === "limit" &&
+    cause.boundary === "file-size"
+  )
+    return new AnalysisResourceConstraintError(
+      "inspect_wasm_artifact",
+      "file-size",
+      reason,
+      { maximum_input_bytes: WABT_LIMITS.inputBytes },
+      {
+        cause,
+        ...cleanupOptions,
+        retryable: false,
+        remediationAction:
+          "Select a suitable stable artifact within the reported input byte allowance. Do not truncate required bytes; retrying the unchanged oversized input will fail again.",
       },
     );
   if (
